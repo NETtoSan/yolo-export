@@ -30,7 +30,7 @@ class SimpleDetectionModel(nn.Module):
         return class_logits, bbox
 
 # Load the model
-model = SimpleDetectionModel(num_classes=2)
+model = SimpleDetectionModel(num_classes=1)
 model.load_state_dict(torch.load('./custom_detection_model.pt', map_location='cpu'))
 model.eval()
 
