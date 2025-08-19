@@ -158,7 +158,7 @@ for epoch in range(10):
                         correct += 1
             batch_map50 = correct / all_pred if all_pred > 0 else 0
         model.train()
-        print(f"  Batch {batch_idx}: Loss {loss.item():.4f} mAP@0.5 {batch_map50:.4f}")
+        print(f"Batch [{epoch}] [{batch_idx}/{num_batches}]: Loss {loss.item():.4f} mAP@0.5 {batch_map50:.4f}")
     map50 = compute_map50(model, train_loader, device=device)
     print(f"Epoch {epoch}: Final Loss {loss.item():.4f} mAP@0.5 {map50:.4f}")
 
