@@ -1,94 +1,107 @@
-import os
 import torch
+import torch.nn as nn
 from torchvision import transforms
 from PIL import Image
+import os
 import cv2
 import numpy as np
-import time
 
-# Import the model definition
-import torch.nn as nn
-
+# ------------------------------
+# Define your same model
+# ------------------------------
 class SimpleDetectionModel(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
+        # Backbone: deeper with more channels
         self.features = nn.Sequential(
-            nn.Conv2d(3, 16, 3, stride=2, padding=1),
+            nn.Conv2d(3, 32, 3, stride=2, padding=1),   # [B,32,H/2,W/2]
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),  # [B,64,H/4,W/4]
+            nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1))
+            nn.Conv2d(64, 128, 3, stride=2, padding=1), # [B,128,H/8,W/8]
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.Conv2d(128, 256, 3, stride=2, padding=1), # [B,256,H/16,W/16]
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
         )
-        self.classifier = nn.Linear(32, num_classes)
-        self.bbox_regressor = nn.Linear(32, 4)  # [x, y, w, h]
+
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1,1)),
+            nn.Flatten(),
+            nn.Linear(256, num_classes)
+        )
+
+        # BBox regression head
+        self.bbox_regressor = nn.Sequential(
+            nn.Conv2d(256, 128, 3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1,1)),  # automatically outputs 1x1 per channel
+            nn.Flatten(),
+            nn.Linear(128, 4),  # now input is 128, independent of H/W
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
         x = self.features(x)
-        x = x.view(x.size(0), -1)
         class_logits = self.classifier(x)
         bbox = self.bbox_regressor(x)
         return class_logits, bbox
 
-# Load the model
-model = SimpleDetectionModel(num_classes=2)
-model.load_state_dict(torch.load('./custom_detection_model.pt', map_location='cpu'))
+# ------------------------------
+# Device & model
+# ------------------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = SimpleDetectionModel(num_classes=1).to(device)
+model.load_state_dict(torch.load("custom_detection_model.pt", map_location=device))
 model.eval()
 
-# Image preprocessing
+# ------------------------------
+# Image folder & transforms
+# ------------------------------
+img_folder = "./yolov11/bottles/test/images"  # change this
 transform = transforms.Compose([
-    transforms.ToTensor(),
+    transforms.ToTensor()
 ])
 
-def detect_objects(image_path, threshold=0.3):
-    image = Image.open(image_path).convert('RGB')
-    input_tensor = transform(image).unsqueeze(0)  # [1, 3, H, W]
+# ------------------------------
+# Run inference
+# ------------------------------
+for img_name in os.listdir(img_folder):
+    if not img_name.lower().endswith(('.jpg', '.jpeg', '.png')):
+        continue
+
+    # Load image
+    img_path = os.path.join(img_folder, img_name)
+    pil_img = Image.open(img_path).convert("RGB")
+    w, h = pil_img.size
+    img_tensor = transform(pil_img).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        class_logits, bbox = model(input_tensor)
-        probs = torch.softmax(class_logits, dim=1)
-        score, label = torch.max(probs, dim=1)
-        box = bbox[0]
+        class_logits, bbox_pred = model(img_tensor)
+        score = torch.sigmoid(class_logits).item()  # binary class score
+        label = 1 if score > 0.5 else 0
 
-    results = []
-    if score.item() > threshold:
-        # Clip box values to [0, 1]
-        x, y, bw, bh = box.tolist()
-        x = max(0.0, min(1.0, x))
-        y = max(0.0, min(1.0, y))
-        bw = max(0.0, min(1.0, bw))
-        bh = max(0.0, min(1.0, bh))
-        results.append({
-            'box': [x, y, bw, bh],
-            'label': int(label.item()),
-            'score': float(score.item())
-        })
-    return results
+    # Convert bbox to pixel coordinates
+    x_c, y_c, bw, bh = bbox_pred[0].cpu().numpy()
+    x_min = int((x_c - bw/2) * w)
+    y_min = int((y_c - bh/2) * h)
+    x_max = int((x_c + bw/2) * w)
+    y_max = int((y_c + bh/2) * h)
 
-if __name__ == "__main__":
-    images_dir = './yolov11/bottles/train/images'
-    for filename in os.listdir(images_dir):
-        if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-            image_path = os.path.join(images_dir, filename)
-            detections = detect_objects(image_path)
-            print(f"{filename}: {detections}")
+    # Load image for OpenCV display
+    img_cv = cv2.imread(img_path)
+    cv2.rectangle(img_cv, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+    cv2.putText(img_cv, f"Label: {label} | Score: {score:.2f}",
+                (x_min, max(y_min-10,0)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
 
-            # Show image and draw bounding box
-            image = cv2.imread(image_path)
-            if image is None:
-                print(f"Warning: Unable to read image {image_path}")
-                continue
-            h, w = image.shape[:2]
-            for det in detections:
-                x, y, bw, bh = det['box']
-                # Convert normalized [x, y, w, h] to pixel coordinates
-                x1 = int((x - bw / 2) * w)
-                y1 = int((y - bh / 2) * h)
-                x2 = int((x + bw / 2) * w)
-                y2 = int((y + bh / 2) * h)
-                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(image, f"Label:{det['label']} Score:{det['score']:.2f}", (x1, y1-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
-            cv2.imshow('Detection', image)
-            cv2.waitKey(1)
-            time.sleep(0.5)
-    cv2.destroyAllWindows()
+    # Show for 500ms
+    cv2.imshow("Inference", img_cv)
+    key = cv2.waitKey(500)
+    if key == 27:  # ESC to exit early
+        break
+
+cv2.destroyAllWindows()
