@@ -144,6 +144,9 @@ train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)  # <-- cha
 val_dataset = CustomDetectionDataset('./yolov11/bottles/valid/labels', './yolov11/bottles/valid/images')
 val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)    # <-- and here for validation
 
+
+
+## FIX# ------------------------------
 # Instantiate model, loss, optimizer
 model = SimpleDetectionModel(num_classes=1).to(device)
 criterion_cls = nn.BCEWithLogitsLoss()  # For binary classification, use BCEWithLogitsLoss if you prefer logits
@@ -182,8 +185,8 @@ def check_dataset_with_labels(dataset, num_samples=5, name="Dataset"):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         # Show image for 500 ms
-        cv2.imshow(f"{name} Sample #{idx}", img_np)
-        cv2.waitKey(500)
+        cv2.imshow(f"Sample", img_np)
+        cv2.waitKey(250)
         cv2.destroyAllWindows()
 
 
@@ -193,7 +196,7 @@ check_dataset_with_labels(val_dataset, name="Validation Dataset")
 
 
 criterion_bbox = nn.SmoothL1Loss()
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 def compute_iou(box1, box2):
     # box: [x, y, w, h] normalized
@@ -219,6 +222,7 @@ def compute_iou(box1, box2):
     iou = inter_area / union_area if union_area > 0 else 0
     return iou
 
+## FIX# ------------------------------
 def compute_map50(model, dataloader, device=torch.device('cpu')):
     model.eval()
     all_true = 0
@@ -230,22 +234,22 @@ def compute_map50(model, dataloader, device=torch.device('cpu')):
             images = images.to(device)
             labels = labels.to(device)
             bboxes = bboxes.to(device)
-
             class_logits, bbox_preds = model(images)
-            probs = torch.sigmoid(class_logits).squeeze(1)  # shape [B]
-            pred_labels = (probs > 0.5).long()              # 0 or 1
+            probs = torch.sigmoid(class_logits)        # shape [B,1]
+            scores = probs.squeeze(1)                  # [B]
+            pred_labels = (scores > 0.5).long()        # threshold at 0.5
 
             for j in range(images.size(0)):
-                if pred_labels[j] == 1:                    # predicted positive
+                if scores[j] > 0.5:
                     all_pred += 1
-                    iou = compute_iou(bbox_preds[j].cpu(), bboxes[j].cpu())
+                    iou = compute_iou(bbox_preds[j], bboxes[j])
                     if pred_labels[j] == labels[j] and iou > 0.5:
                         correct += 1
                 all_true += 1
-
+            
             sys.stdout.write(f"\rmAP50: [{batch_idx}/{len(dataloader)}] batches processed")
             sys.stdout.flush()
-
+        
         print()
 
     precision = correct / all_pred if all_pred > 0 else 0
@@ -268,7 +272,7 @@ def evaluate(model, dataloader, criterion_cls, criterion_bbox, device):
             labels = labels.float().unsqueeze(1)  # Ensure labels are 2D for BCEWithLogitsLoss
             loss_cls = criterion_cls(class_logits, labels)
             loss_bbox = criterion_bbox(bbox_preds, bboxes)
-            loss = loss_cls + loss_bbox
+            loss = loss_cls + 0.5 * loss_bbox
             total_loss += loss.item() * images.size(0)
 
             i += 1
@@ -280,9 +284,12 @@ def evaluate(model, dataloader, criterion_cls, criterion_bbox, device):
     map50 = compute_map50(model, dataloader, device)
     return avg_loss, map50
 
+
+## FIX# ------------------------------
 def visualize_predictions(model, dataset, device, score_thresh=0.5, num_samples=5):
     """
     Visualize predictions on random samples from a dataset.
+    Prints predicted scores and labels to quickly check detection.
     """
     model.eval()
     indices = random.sample(range(len(dataset)), min(num_samples, len(dataset)))
@@ -294,17 +301,21 @@ def visualize_predictions(model, dataset, device, score_thresh=0.5, num_samples=
         img_tensor = image.unsqueeze(0).to(device)
         with torch.no_grad():
             class_logits, bbox_pred = model(img_tensor)
-            score = torch.sigmoid(class_logits)[0].item()
-            pred_label = 1 if score > score_thresh else 0
-            bbox_pred = bbox_pred[0].cpu().numpy()
+
+            score = torch.sigmoid(class_logits).item()
+            pred_label = 1 if score > 0.5 else 0
+            bbox_pred = bbox_pred[0].cpu().numpy()  # single sample
+
+        # Print info for debugging
+        print(f"Sample #{idx} | GT label: {label.item()} | "
+              f"Pred score: {score:.3f} | Pred label: {pred_label}")
 
         # Convert tensor -> numpy -> HWC in uint8
         img_np = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
         img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-
         h, w = img_np.shape[:2]
 
-        # Ground truth box
+        # Draw ground truth box in green
         x_c, y_c, bw, bh = bbox_gt.numpy()
         x_min_gt = int((x_c - bw / 2) * w)
         y_min_gt = int((y_c - bh / 2) * h)
@@ -314,21 +325,23 @@ def visualize_predictions(model, dataset, device, score_thresh=0.5, num_samples=
         cv2.putText(img_np, f"GT: {label.item()}", (x_min_gt, max(y_min_gt-5,0)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
 
-        # Predicted box
-        x_c, y_c, bw, bh = bbox_pred
-        x_min = int((x_c - bw / 2) * w)
-        y_min = int((y_c - bh / 2) * h)
-        x_max = int((x_c + bw / 2) * w)
-        y_max = int((y_c + bh / 2) * h)
-        cv2.rectangle(img_np, (x_min, y_min), (x_max, y_max), (0, 0, 255), 2)
-        cv2.putText(img_np, f"Pred: {pred_label} ({score:.2f})", (x_min, max(y_min-5,0)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+        # Draw predicted box in red if confidence above threshold
+        if score > score_thresh:
+            x_c, y_c, bw, bh = bbox_pred
+            x_min = int((x_c - bw / 2) * w)
+            y_min = int((y_c - bh / 2) * h)
+            x_max = int((x_c + bw / 2) * w)
+            y_max = int((y_c + bh / 2) * h)
+            cv2.rectangle(img_np, (x_min, y_min), (x_max, y_max), (0, 0, 255), 2)
+            cv2.putText(img_np, f"Pred: {pred_label} ({score:.2f})", 
+                        (x_min, max(y_min-5,0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
 
         # Show the image
-        cv2.imshow(f"Validation Sample", img_np)
-        cv2.waitKey(250)
+        cv2.imshow("Validation Sample", img_np)
+        cv2.waitKey(150)
     cv2.destroyAllWindows()
-        
+
 
 # Training loop
 num_epochs = 30
@@ -346,13 +359,13 @@ for epoch in range(num_epochs):
         labels = labels.float().unsqueeze(1).to(device)  # Ensure labels are 2D for BCEWithLogitsLoss
         loss_cls = criterion_cls(class_logits, labels)
         loss_bbox = criterion_bbox(bbox_preds, bboxes)
-        loss = loss_cls + loss_bbox
+        loss = loss_cls + 0.5 * loss_bbox
         loss.backward()
         optimizer.step()
         running_loss += loss.item() * images.size(0)
 
         sys.stdout.write(
-            f"\rEpoch [{epoch+1}/{num_epochs}] Batch [{batch_idx+1}/{batchsize}] Loss: {loss.item():.4f}"
+            f"\rEpoch [{epoch+1}/{num_epochs}] Batch [{batch_idx+1}/{batchsize}] Loss: {loss.item():.4f} | loss_cls: {loss_cls.item():.4f}, loss_bbox: {loss_bbox.item():.4f}"
         )
         sys.stdout.flush()
 
