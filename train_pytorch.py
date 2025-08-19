@@ -37,7 +37,7 @@ class CustomDetectionDataset(Dataset):
             # If annotation is missing or invalid, return a dummy label and bbox
             label = 0
             bbox = torch.tensor([0.5, 0.5, 0.1, 0.1])
-        return image, torch.tensor(label), bbox
+        return image, torch.tensor(label, dtype=torch.long), bbox
 
 # Simple CNN model for detection (for illustration)
 class SimpleDetectionModel(nn.Module):
@@ -123,19 +123,42 @@ val_dataset = CustomDetectionDataset('./yolov11/bottles/valid/labels', './yolov1
 val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)    # <-- and here for validation
 
 # Instantiate model, loss, optimizer
-model = SimpleDetectionModel(num_classes=2).to(device)
+model = SimpleDetectionModel(num_classes=1).to(device)
 criterion_cls = nn.CrossEntropyLoss()
 criterion_bbox = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
+def evaluate(model, dataloader, criterion_cls, criterion_bbox, device):
+    model.eval()
+    total_loss = 0.0
+    with torch.no_grad():
+        for images, labels, bboxes in dataloader:
+            images = images.to(device)
+            labels = labels.to(device)
+            bboxes = bboxes.to(device)
+
+            class_logits, bbox_preds = model(images)
+            loss_cls = criterion_cls(class_logits, labels)
+            loss_bbox = criterion_bbox(bbox_preds, bboxes)
+            loss = loss_cls + loss_bbox
+            total_loss += loss.item() * images.size(0)
+
+    avg_loss = total_loss / len(dataloader.dataset)
+    map50 = compute_map50(model, dataloader, device)
+    return avg_loss, map50
+
+
 # Training loop
-for epoch in range(10):
-    num_batches = len(train_loader)
-    print(f"Epoch {epoch} starting... ({num_batches} batches)")
+num_epochs = 3
+for epoch in range(num_epochs):
+    model.train()
+    running_loss = 0.0
+    batchsize = len(train_loader)
     for batch_idx, (images, labels, bboxes) in enumerate(train_loader):
         images = images.to(device)
         labels = labels.to(device)
         bboxes = bboxes.to(device)
+
         optimizer.zero_grad()
         class_logits, bbox_preds = model(images)
         loss_cls = criterion_cls(class_logits, labels)
@@ -143,41 +166,17 @@ for epoch in range(10):
         loss = loss_cls + loss_bbox
         loss.backward()
         optimizer.step()
-        # Compute mAP@0.5 for current batch
-        model.eval()
-        with torch.no_grad():
-            probs = torch.softmax(class_logits, dim=1)
-            scores, pred_labels = torch.max(probs, dim=1)
-            correct = 0
-            all_pred = 0
-            for i in range(images.size(0)):
-                if scores[i] > 0.5:
-                    all_pred += 1
-                    iou = compute_iou(bbox_preds[i].cpu(), bboxes[i].cpu())
-                    if pred_labels[i] == labels[i] and iou > 0.5:
-                        correct += 1
-            batch_map50 = correct / all_pred if all_pred > 0 else 0
-        model.train()
-        print(f"Batch [{epoch}] [{batch_idx}/{num_batches}]: Loss {loss.item():.4f} mAP@0.5 {batch_map50:.4f}")
-    map50 = compute_map50(model, train_loader, device=device)
-    print(f"Epoch {epoch}: Final Loss {loss.item():.4f} mAP@0.5 {map50:.4f}")
+        running_loss += loss.item() * images.size(0)
+        print(f"Batch [{epoch+1}] [{batch_idx+1}/{batchsize}] Loss: {loss.item():.4f}")
 
-# Validation after training
-model.eval()
-val_loss = 0
-with torch.no_grad():
-    for images, labels, bboxes in val_loader:
-        images = images.to(device)
-        labels = labels.to(device)
-        bboxes = bboxes.to(device)
-        class_logits, bbox_preds = model(images)
-        loss_cls = criterion_cls(class_logits, labels)
-        loss_bbox = criterion_bbox(bbox_preds, bboxes)
-        loss = loss_cls + loss_bbox
-        val_loss += loss.item() * images.size(0)
-val_loss /= len(val_dataset)
-val_map50 = compute_map50(model, val_loader, device=device)
-print(f"Validation Loss: {val_loss:.4f} Validation mAP@0.5: {val_map50:.4f}")
+    epoch_loss = running_loss / len(train_dataset)
+    train_map50 = compute_map50(model, train_loader, device=device)
+    val_loss, val_map50 = evaluate(model, val_loader, criterion_cls, criterion_bbox, device)
+
+    print(f"Epoch {epoch+1}/{num_epochs} | "
+          f"Train Loss: {epoch_loss:.4f}, mAP@0.5: {train_map50:.4f} | "
+          f"Val Loss: {val_loss:.4f}, mAP@0.5: {val_map50:.4f}")
+    
 
 # Save model
 torch.save(model.state_dict(), 'custom_detection_model.pt')

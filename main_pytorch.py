@@ -30,7 +30,7 @@ class SimpleDetectionModel(nn.Module):
         return class_logits, bbox
 
 # Load the model
-model = SimpleDetectionModel(num_classes=1)
+model = SimpleDetectionModel(num_classes=2)
 model.load_state_dict(torch.load('./custom_detection_model.pt', map_location='cpu'))
 model.eval()
 
@@ -39,10 +39,9 @@ transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-def detect_objects(image_path):
+def detect_objects(image_path, threshold=0.3):
     image = Image.open(image_path).convert('RGB')
-    input_tensor = transform(image)
-    input_tensor = input_tensor.unsqueeze(0)  # Add batch dimension
+    input_tensor = transform(image).unsqueeze(0)  # [1, 3, H, W]
 
     with torch.no_grad():
         class_logits, bbox = model(input_tensor)
@@ -51,16 +50,22 @@ def detect_objects(image_path):
         box = bbox[0]
 
     results = []
-    if score.item() > 0.5:  # Confidence threshold
+    if score.item() > threshold:
+        # Clip box values to [0, 1]
+        x, y, bw, bh = box.tolist()
+        x = max(0.0, min(1.0, x))
+        y = max(0.0, min(1.0, y))
+        bw = max(0.0, min(1.0, bw))
+        bh = max(0.0, min(1.0, bh))
         results.append({
-            'box': box.tolist(),
+            'box': [x, y, bw, bh],
             'label': int(label.item()),
             'score': float(score.item())
         })
     return results
 
 if __name__ == "__main__":
-    images_dir = './yolov8/bottle/train/images'
+    images_dir = './yolov11/bottles/train/images'
     for filename in os.listdir(images_dir):
         if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
             image_path = os.path.join(images_dir, filename)
