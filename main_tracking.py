@@ -14,7 +14,7 @@ import serial
 import openvino
 
 
-device_preferences= "intel:gpu" if torch.cuda.is_available() else "cpu"
+device_preferences= "cpu" if torch.cuda.is_available() else "cpu"
 
 mod_name = "bottles11-11s-480" #"bottles8-v11_3gflops_480_results"
 model = YOLO(f"./runs/detect/{mod_name}/weights/best_int8_openvino_model")

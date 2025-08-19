@@ -11,12 +11,12 @@ import torch
 
 
 
-device_preferences = "intel:gpu" if torch.cuda.is_available() else "cpu"
+device_preferences = "cpu" if torch.cuda.is_available() else "cpu"
 
-mod_name = "bottles11-11s-480" #"bottles8-v11_3gflops_480_results"
-model = YOLO(f"./runs/detect/{mod_name}/weights/best_openvino_model")
+#mod_name = "bottles11-11s-480" #"bottles8-v11_3gflops_480_results"
+#model = YOLO(f"./runs/detect/{mod_name}/weights/best_openvino_model")
 
-#model = YOLO('./files/bottles9-v11n-480.pt', task='detect')
+model = YOLO('./files/custom_detection_model.pt', task='detect')
 
 album_path = "./yolov11/bottlesv11/test/images"
 vid_path = "./files/test4.mp4"
