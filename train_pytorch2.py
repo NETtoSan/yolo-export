@@ -17,23 +17,18 @@ class YoloDataset(Dataset):
         self.transform = transform if transform else transforms.ToTensor()
         self.img_files = [f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
         self.missing_labels = []
-        self.cleaned_files = []
         for f in self.img_files:
             label_path = os.path.join(self.label_dir, os.path.splitext(f)[0] + '.txt')
             if not os.path.exists(label_path) or os.path.getsize(label_path) == 0:
                 self.missing_labels.append(f)
-                # Mark image file for exclusion if label is missing/empty
-                self.cleaned_files.append(f)
-        # Remove marked files from img_files (do not delete from disk)
-        self.img_files = [f for f in self.img_files if f not in self.cleaned_files]
-        print(f"Total images after cleanup: {len(self.img_files)}")
-        print(f"Images excluded due to missing/empty label files: {len(self.cleaned_files)}")
-        if self.cleaned_files:
-            print("Sample excluded files:")
-            for fname in self.cleaned_files[:10]:
+        print(f"Total images: {len(self.img_files)}")
+        print(f"Images with missing/empty label files (will be treated as negatives): {len(self.missing_labels)}")
+        if self.missing_labels:
+            print("Sample negative files:")
+            for fname in self.missing_labels[:10]:
                 print(f" - {fname}")
         else:
-            print("No files excluded.")
+            print("No negative files.")
         print()
 
     def __len__(self):
@@ -53,7 +48,7 @@ class YoloDataset(Dataset):
             label = 1
             bbox = torch.tensor([float(x) for x in line[1:5]], dtype=torch.float32)
         else:
-            print(f"Warning: Missing or empty label file for {img_name}. Using default values.")
+            #print(f"Warning: Missing or empty label file for {img_name}. Using default values.")
             label = 0
             bbox = torch.zeros(4)
         return image, torch.tensor(label, dtype=torch.float32), bbox
@@ -201,8 +196,8 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5)
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
         cv2.imshow("Detection", img_np)
         cv2.waitKey(50)
-    print(f"Detection accuracy: {correct}/{total} ({(correct/total)*100:.2f}%)\nClosing window....\n")
     cv2.destroyAllWindows()
+    #print(f"Detection accuracy: {correct}/{total} ({(correct/total)*100:.2f}%)\nClosing window....\n")
 
 if __name__ == "__main__":
     # Paths
@@ -217,6 +212,17 @@ if __name__ == "__main__":
     val_dataset = YoloDataset(val_img_dir, val_label_dir)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4)
 
+    # Print label distribution in validation set
+    pos_count = 0
+    neg_count = 0
+    for i in range(len(val_dataset)):
+        _, label, _ = val_dataset[i]
+        if int(label.item()) == 1:
+            pos_count += 1
+        else:
+            neg_count += 1
+    print(f"Validation set label distribution: {pos_count} positive, {neg_count} negative samples.")
+
     # Model, Loss, Optimizer
     if torch.cuda.is_available():
         device = torch.device('cuda')
@@ -230,8 +236,9 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     # Training loop
+    epoch_loop = 50
     try:
-        for epoch in range(10):
+        for epoch in range(epoch_loop):
             model.train()
             batchsize = len(train_loader)
             img_loss = len(train_dataset.missing_labels)
@@ -244,17 +251,24 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+
                 sys.stdout.write(
-                    f"\rEpoch [{epoch+1}/10] Batch [{batch_idx+1}/{batchsize}] [Missing labels: {img_loss}] Loss: {loss.item():.4f} | loss_cls: {loss_cls.item():.4f}, loss_bbox: {loss_bbox.item():.4f}"
+                    f"\rEpoch [{epoch+1}/{epoch_loop}] Batch [{batch_idx+1}/{batchsize}] [Missing labels: {img_loss}] Loss: {loss.item():.4f} | loss_cls: {loss_cls.item():.4f}, loss_bbox: {loss_bbox.item():.4f}"
                 )
                 sys.stdout.flush()
+            # Synchronize CUDA and flush output before moving to validation
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            sys.stdout.flush()
             print(f"\nEpoch {epoch+1} Loss: {loss.item():.4f}")
             # Calculate mAP before validation
             print(f"Calculating mAP on validation set after epoch {epoch+1}...")
             calculate_map(model, val_loader, device)
             validate(model, val_loader, criterion_cls, criterion_bbox, device)
             print(f"Detecting 30 images from validation set after epoch {epoch+1}...")
-            detect_and_visualize(model, val_dataset, device, num_images=30)
+            detect_and_visualize(model, val_dataset, device, num_images=50)
+
+            
         # Save model
         torch.save(model.state_dict(), 'simple_yolo_model.pt')
     except KeyboardInterrupt:
