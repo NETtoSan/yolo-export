@@ -149,7 +149,13 @@ val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)    # <-- and 
 ## FIX# ------------------------------
 # Instantiate model, loss, optimizer
 model = SimpleDetectionModel(num_classes=1).to(device)
-criterion_cls = nn.BCEWithLogitsLoss()  # For binary classification, use BCEWithLogitsLoss if you prefer logits
+
+from collections import Counter
+counts = Counter([train_dataset[i][1] for i in range(len(train_dataset))])
+print("Label distribution:", counts)
+
+pos_weight = torch.tensor([counts[0] / counts[1]]).to(device)
+criterion_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight)   # For binary classification, use BCEWithLogitsLoss if you prefer logits
 # If you have multiple classes, use CrossEntropyLoss and adjust num_classes accordingly
 #criterion_cls = nn.CrossEntropyLoss()  # For multi-class classification
 
@@ -191,8 +197,8 @@ def check_dataset_with_labels(dataset, num_samples=5, name="Dataset"):
 
 
 # Run dataset checks before training
-check_dataset_with_labels(train_dataset, name="Training Dataset")
-check_dataset_with_labels(val_dataset, name="Validation Dataset")
+#check_dataset_with_labels(train_dataset, name="Training Dataset")
+#check_dataset_with_labels(val_dataset, name="Validation Dataset")
 
 
 criterion_bbox = nn.SmoothL1Loss()
@@ -223,39 +229,37 @@ def compute_iou(box1, box2):
     return iou
 
 ## FIX# ------------------------------
-def compute_map50(model, dataloader, device=torch.device('cpu')):
+def compute_map50(model, dataloader, device=torch.device("cpu")):
     model.eval()
-    all_true = 0
-    all_pred = 0
     correct = 0
+    total = 0
 
     with torch.no_grad():
         for batch_idx, (images, labels, bboxes) in enumerate(dataloader, 1):
-            images = images.to(device)
-            labels = labels.to(device)
-            bboxes = bboxes.to(device)
+            images, labels, bboxes = images.to(device), labels.to(device), bboxes.to(device)
             class_logits, bbox_preds = model(images)
-            probs = torch.sigmoid(class_logits)        # shape [B,1]
-            scores = probs.squeeze(1)                  # [B]
-            pred_labels = (scores > 0.5).long()        # threshold at 0.5
+            scores = torch.sigmoid(class_logits).squeeze(1)   # [B]
+            pred_labels = (scores > 0.5).long()
 
+            # check per-sample correctness
             for j in range(images.size(0)):
-                if scores[j] > 0.5:
-                    all_pred += 1
-                    iou = compute_iou(bbox_preds[j], bboxes[j])
-                    if pred_labels[j] == labels[j] and iou > 0.5:
-                        correct += 1
-                all_true += 1
-            
-            sys.stdout.write(f"\rmAP50: [{batch_idx}/{len(dataloader)}] batches processed")
-            sys.stdout.flush()
-        
-        print()
+                total += 1
+                iou = compute_iou(bbox_preds[j], bboxes[j])
+                if pred_labels[j] == labels[j] and iou > 0.5:
+                    correct += 1
 
-    precision = correct / all_pred if all_pred > 0 else 0
-    recall = correct / all_true if all_true > 0 else 0
-    map50 = precision
-    return map50
+            # running mAP50 (actually acc@50IoU for single object)
+            running_map50 = correct / total if total > 0 else 0
+            sys.stdout.write(
+                f"\r[Batch {batch_idx}/{len(dataloader)}] "
+                f"Running mAP50: {running_map50:.4f} "
+                f"(Correct: {correct}/{total})"
+            )
+            sys.stdout.flush()
+
+    print()  # newline after progress bar
+    final_map50 = correct / total if total > 0 else 0
+    return final_map50
 
 
 def evaluate(model, dataloader, criterion_cls, criterion_bbox, device):
@@ -302,13 +306,13 @@ def visualize_predictions(model, dataset, device, score_thresh=0.5, num_samples=
         with torch.no_grad():
             class_logits, bbox_pred = model(img_tensor)
 
-            score = torch.sigmoid(class_logits).item()
-            pred_label = 1 if score > 0.5 else 0
-            bbox_pred = bbox_pred[0].cpu().numpy()  # single sample
+            score = torch.sigmoid(class_logits).squeeze().item()
+
 
         # Print info for debugging
         print(f"Sample #{idx} | GT label: {label.item()} | "
-              f"Pred score: {score:.3f} | Pred label: {pred_label}")
+        f"Raw logit: {class_logits.squeeze().item():.4f} | "
+        f"Pred score: {score:.6f} | Pred label: {1 if score > 0.5 else 0}")
 
         # Convert tensor -> numpy -> HWC in uint8
         img_np = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
