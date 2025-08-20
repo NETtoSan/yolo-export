@@ -9,44 +9,40 @@ import numpy as np
 # ------------------------------
 # Define your same model
 # ------------------------------
-class SimpleDetectionModel(nn.Module):
-    def __init__(self, num_classes):
+class SimpleYoloNet(nn.Module):
+    def __init__(self):
         super().__init__()
-        # Backbone: deeper with more channels
         self.features = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2, padding=1),   # [B,32,H/2,W/2]
+            nn.Conv2d(3, 32, 3, stride=2, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),  # [B,64,H/4,W/4]
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1), # [B,128,H/8,W/8]
+            nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Conv2d(128, 256, 3, stride=2, padding=1), # [B,256,H/16,W/16]
+            nn.Conv2d(128, 256, 3, stride=2, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
-        )
-
-        # Classification head
-        self.classifier = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1,1)),
-            nn.Flatten(),
-            nn.Linear(256, num_classes)
-        )
-
-        # BBox regression head
-        self.bbox_regressor = nn.Sequential(
-            nn.Conv2d(256, 128, 3, padding=1),
+            nn.Conv2d(256, 512, 3, stride=2, padding=1),
+            nn.BatchNorm2d(512),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1,1)),  # automatically outputs 1x1 per channel
-            nn.Flatten(),
-            nn.Linear(128, 4),  # now input is 128, independent of H/W
-            nn.Sigmoid()
+            nn.AdaptiveAvgPool2d((1,1)),
+        )
+        self.classifier = nn.Linear(512, 1)      # Objectness score
+        self.bbox_regressor = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 4),
+            nn.Sigmoid()  # constrain outputs to [0, 1] for normalized bbox
         )
 
     def forward(self, x):
         x = self.features(x)
+        x = x.view(x.size(0), -1)
         class_logits = self.classifier(x)
         bbox = self.bbox_regressor(x)
         return class_logits, bbox
@@ -55,14 +51,14 @@ class SimpleDetectionModel(nn.Module):
 # Device & model
 # ------------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = SimpleDetectionModel(num_classes=1).to(device)
-model.load_state_dict(torch.load("custom_detection_model.pt", map_location=device))
+model = SimpleYoloNet().to(device)
+model.load_state_dict(torch.load("simple_yolo_model.pt", map_location=device))
 model.eval()
 
 # ------------------------------
 # Image folder & transforms
 # ------------------------------
-img_folder = "./yolov11/bottles/test/images"  # change this
+img_folder = "./yolov11/bottlesv11/test/images"  # change this
 transform = transforms.Compose([
     transforms.ToTensor()
 ])
