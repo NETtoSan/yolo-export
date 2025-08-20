@@ -62,15 +62,28 @@ class SimpleYoloNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.ReLU(),
-            nn.Conv2d(128, 256, 3, stride=2, padding=1), nn.ReLU(),
+            nn.Conv2d(3, 32, 3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.Conv2d(128, 256, 3, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.Conv2d(256, 512, 3, stride=2, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
             nn.AdaptiveAvgPool2d((1,1)),
         )
-        self.classifier = nn.Linear(256, 1)      # Objectness score
-        # Improved bounding box regressor: small MLP + sigmoid
+        self.classifier = nn.Linear(512, 1)      # Objectness score
+        # Improved bounding box regressor: deeper MLP + sigmoid
         self.bbox_regressor = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(),
             nn.Linear(256, 128),
             nn.ReLU(),
             nn.Linear(128, 4),
@@ -94,15 +107,19 @@ def validate(model, dataloader, criterion_cls, criterion_bbox, device):
             class_logits, bbox_preds = model(images)
             loss_cls = criterion_cls(class_logits, labels)
             loss_bbox = criterion_bbox(bbox_preds, bboxes)
-            loss = loss_cls + 0.5 * loss_bbox
+            loss = loss_cls + 2.0 * loss_bbox  # Increased bbox loss weight
             total_loss += loss.item() * images.size(0)
+            # Print bbox output stats for debugging
+            bbox_min = bbox_preds.min().item()
+            bbox_max = bbox_preds.max().item()
+            bbox_mean = bbox_preds.mean().item()
             sys.stdout.write(
-                f"\rValidating Batch [{batch_idx+1}/{batchsize}] Loss: {loss.item():.4f} | loss_cls: {loss_cls.item():.4f}, loss_bbox: {loss_bbox.item():.4f}"
+                f"\rValidating Batch [{batch_idx+1}/{batchsize}] Loss: {loss.item():.4f} | loss_cls: {loss_cls.item():.4f}, loss_bbox: {loss_bbox.item():.4f} | bbox_out: min={bbox_min:.3f}, max={bbox_max:.3f}, mean={bbox_mean:.3f}"
             )
             sys.stdout.flush()
     avg_loss = total_loss / len(dataloader.dataset)
     print(f"\nValidation Loss: {avg_loss:.4f}")
-    return avg_loss
+    #return avg_loss
 
 def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5):
     model.eval()
@@ -110,7 +127,7 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
     false_positives = 0
     false_negatives = 0
     total_gt = 0
-    batchsize = len(dataloader)
+    batchsize = len(dataloader) if hasattr(dataloader, '__len__') else None
     with torch.no_grad():
         for batch_idx, (images, labels, bboxes) in enumerate(dataloader):
             images = images.to(device)
@@ -157,7 +174,7 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
     precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
     recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
     print(f"\nmAP@{iou_threshold}: Precision={precision:.4f}, Recall={recall:.4f}, TP={true_positives}, FP={false_positives}, FN={false_negatives}")
-    return precision, recall
+    #return precision, recall
 
 def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5):
     model.eval()
@@ -175,7 +192,12 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5)
         is_correct = pred_label == int(label.item())
         if is_correct:
             correct += 1
-        print(f"Image {idx}: GT label={int(label.item())}, Pred label={pred_label}, Score={score:.4f}, Correct={is_correct}")
+
+            sys.stdout.write(
+                f"\rImage {idx}: GT label={int(label.item())}, Pred label={pred_label}, Score={score:.4f}, Correct={is_correct}"
+            )
+        sys.stdout.flush()
+
         # Convert tensor to numpy image
         img_np = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
         img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
@@ -201,74 +223,134 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5)
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
         cv2.imshow("Detection", img_np)
         cv2.waitKey(50)
-    print(f"Detection accuracy: {correct}/{total} ({(correct/total)*100:.2f}%)\nClosing window....\n")
+    print(f"Detection accuracy: {correct}/{total} ({(correct/total)*100:.2f}%)\n")
 
-if __name__ == "__main__":
-    # Paths
-    img_dir = './yolov11/bottlesv11/train/images'
-    label_dir = './yolov11/bottlesv11/train/labels'
-    val_img_dir = './yolov11/bottlesv11/valid/images'
-    val_label_dir = './yolov11/bottlesv11/valid/labels'
 
-    # Dataset and DataLoader
-    train_dataset = YoloDataset(img_dir, label_dir)
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4)
-    val_dataset = YoloDataset(val_img_dir, val_label_dir)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4)
+# Paths
+img_dir = './yolov11/bottlesv11/train/images'
+label_dir = './yolov11/bottlesv11/train/labels'
+val_img_dir = './yolov11/bottlesv11/valid/images'
+val_label_dir = './yolov11/bottlesv11/valid/labels'
 
-    # Print label distribution in validation set
-    pos_count = 0
-    neg_count = 0
-    for i in range(len(val_dataset)):
-        _, label, _ = val_dataset[i]
-        if int(label.item()) == 1:
-            pos_count += 1
-        else:
-            neg_count += 1
-    print(f"Validation set label distribution: {pos_count} positive, {neg_count} negative samples.")
+# Dataset and DataLoader
+train_dataset = YoloDataset(img_dir, label_dir)
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+val_dataset = YoloDataset(val_img_dir, val_label_dir)
+val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 
-    # Model, Loss, Optimizer
-    if torch.cuda.is_available():
-        device = torch.device('cuda')
-        print('Using CUDA for training.')
+# Print label distribution in validation set
+pos_count = 0
+neg_count = 0
+for i in range(len(val_dataset)):
+    _, label, _ = val_dataset[i]
+    if int(label.item()) == 1:
+        pos_count += 1
     else:
-        device = torch.device('cpu')
-        print('CUDA not available. Using CPU for training.')
-    model = SimpleYoloNet().to(device)
-    criterion_cls = nn.BCEWithLogitsLoss()
-    criterion_bbox = nn.SmoothL1Loss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+        neg_count += 1
+print(f"Validation set label distribution: {pos_count} positive, {neg_count} negative samples.")
 
-    # Training loop
-    epoch_loop = 50
-    try:
-        for epoch in range(epoch_loop):
-            model.train()
-            batchsize = len(train_loader)
-            img_loss = len(train_dataset.missing_labels)
-            for batch_idx, (images, labels, bboxes) in enumerate(train_loader):
-                images, labels, bboxes = images.to(device), labels.to(device).unsqueeze(1), bboxes.to(device)
-                class_logits, bbox_preds = model(images)
-                loss_cls = criterion_cls(class_logits, labels)
-                loss_bbox = criterion_bbox(bbox_preds, bboxes)
-                loss = loss_cls + 0.5 * loss_bbox
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+# Model, Loss, Optimizer
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+    print('Using CUDA for training.')
+else:
+    device = torch.device('cpu')
+    print('CUDA not available. Using CPU for training.')
 
-                sys.stdout.write(
-                    f"\rEpoch [{epoch+1}/{epoch_loop}] Batch [{batch_idx+1}/{batchsize}] [Missing labels: {img_loss}] Loss: {loss.item():.4f} | loss_cls: {loss_cls.item():.4f}, loss_bbox: {loss_bbox.item():.4f}"
-                )
-                sys.stdout.flush()
-            print(f"\nEpoch {epoch+1} Loss: {loss.item():.4f}")
-            # Calculate mAP before validation
-            print(f"Calculating mAP on validation set after epoch {epoch+1}...")
-            calculate_map(model, val_loader, device)
-            validate(model, val_loader, criterion_cls, criterion_bbox, device)
-            print(f"Detecting 30 images from validation set after epoch {epoch+1}...")
-            detect_and_visualize(model, val_dataset, device, num_images=50)
-        # Save model
-        torch.save(model.state_dict(), 'simple_yolo_model.pt')
-        cv2.destroyAllWindows()
-    except KeyboardInterrupt:
-        print("\nTraining interrupted by user. Exiting cleanly...")
+model = SimpleYoloNet().to(device)
+criterion_cls = nn.BCEWithLogitsLoss()
+criterion_bbox = nn.SmoothL1Loss()
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+
+# --- Ground Truth Bounding Box Visualization ---
+def visualize_ground_truth(dataset, num_images=10):
+    import cv2
+    import numpy as np
+    print(f"\nVisualizing {num_images} ground truth bounding boxes...")
+    indices = np.random.choice(len(dataset), min(num_images, len(dataset)), replace=False)
+    for idx in indices:
+        image, label, bbox_gt = dataset[idx]
+        img_np = (image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+        h, w = img_np.shape[:2]
+        x_c, y_c, bw, bh = bbox_gt.numpy()
+        x_min_gt = int((x_c - bw / 2) * w)
+        y_min_gt = int((y_c - bh / 2) * h)
+        x_max_gt = int((x_c + bw / 2) * w)
+        y_max_gt = int((y_c + bh / 2) * h)
+        cv2.rectangle(img_np, (x_min_gt, y_min_gt), (x_max_gt, y_max_gt), (0, 255, 0), 2)
+        cv2.putText(img_np, f"GT: {label.item()}", (x_min_gt, max(y_min_gt-5,0)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+        cv2.imshow("Ground Truth Bounding Box", img_np)
+        cv2.waitKey(300)
+    cv2.destroyAllWindows()
+    print("Visualization complete.\n")
+
+
+# Visualize ground truth bounding box centers
+def visualize_bbox_centers(dataset):
+    import matplotlib.pyplot as plt
+    x_centers = []
+    y_centers = []
+    for i in range(len(dataset)):
+        _, _, bbox = dataset[i]
+        x_c, y_c, _, _ = bbox.numpy()
+        x_centers.append(x_c)
+        y_centers.append(y_c)
+
+        sys.stdout.write(f"\rProcessing bbox center {i+1}/{len(dataset)}: x={x_c:.3f}, y={y_c:.3f}")
+        sys.stdout.flush()
+
+    print()
+    plt.figure(figsize=(6,6))
+    plt.scatter(x_centers, y_centers, alpha=0.5)
+    plt.title('Ground Truth Bounding Box Centers')
+    plt.xlabel('x_center (normalized)')
+    plt.ylabel('y_center (normalized)')
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.grid(True)
+    plt.show()
+
+visualize_bbox_centers(train_dataset)
+visualize_ground_truth(train_dataset, num_images=10)
+
+epoch_loop = 50
+try:
+    for epoch in range(epoch_loop):
+        model.train()
+        batchsize = len(train_loader)
+        img_loss = len(train_dataset.missing_labels)
+        for batch_idx, (images, labels, bboxes) in enumerate(train_loader):
+            images, labels, bboxes = images.to(device), labels.to(device).unsqueeze(1), bboxes.to(device)
+            class_logits, bbox_preds = model(images)
+            loss_cls = criterion_cls(class_logits, labels)
+            loss_bbox = criterion_bbox(bbox_preds, bboxes)
+            loss = loss_cls + 2.0 * loss_bbox  # Increased bbox loss weight
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # Print bbox output stats for debugging
+            bbox_min = bbox_preds.min().item()
+            bbox_max = bbox_preds.max().item()
+            bbox_mean = bbox_preds.mean().item()
+            sys.stdout.write(
+                f"\rEpoch [{epoch+1}/{epoch_loop}] Batch [{batch_idx+1}/{batchsize}] [Missing labels: {img_loss}] Loss: {loss.item():.4f} | loss_cls: {loss_cls.item():.4f}, loss_bbox: {loss_bbox.item():.4f} | bbox_out: min={bbox_min:.3f}, max={bbox_max:.3f}, mean={bbox_mean:.3f}"
+            )
+            sys.stdout.flush()
+
+        print(f"\nEpoch {epoch+1} Loss: {loss.item():.4f}")
+        # Calculate mAP before validation
+        print(f"Calculating mAP on validation set after epoch {epoch+1}...")
+        calculate_map(model, val_loader, device)
+        validate(model, val_loader, criterion_cls, criterion_bbox, device)
+
+        print(f"Detecting 30 images from validation set after epoch {epoch+1}...")
+        detect_and_visualize(model, val_dataset, device, num_images=50)
+    # Save model
+    torch.save(model.state_dict(), 'simple_yolo_model.pt')
+    cv2.destroyAllWindows()
+except KeyboardInterrupt:
+    print("\nTraining interrupted by user. Exiting cleanly...")
