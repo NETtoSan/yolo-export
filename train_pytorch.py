@@ -10,6 +10,7 @@ import matplotlib.patches as patches
 import random
 import cv2
 import numpy as np
+import random
 
 print("CUDA available:", torch.cuda.is_available())
 print("CUDA device count:", torch.cuda.device_count())
@@ -150,17 +151,11 @@ val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)    # <-- and 
 # Instantiate model, loss, optimizer
 model = SimpleDetectionModel(num_classes=1).to(device)
 
-from collections import Counter
-counts = Counter([train_dataset[i][1] for i in range(len(train_dataset))])
-print("Label distribution:", counts)
-
-pos_weight = torch.tensor([counts[0] / counts[1]]).to(device)
-criterion_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight)   # For binary classification, use BCEWithLogitsLoss if you prefer logits
+criterion_cls = nn.BCEWithLogitsLoss()   # For binary classification, use BCEWithLogitsLoss if you prefer logits
 # If you have multiple classes, use CrossEntropyLoss and adjust num_classes accordingly
 #criterion_cls = nn.CrossEntropyLoss()  # For multi-class classification
 
 # Show dataset contents before training
-import random
 def check_dataset_with_labels(dataset, num_samples=5, name="Dataset"):
     print(f"\n🔍 Checking {name}...")
     print(f"Number of images: {len(dataset)}\n")
@@ -195,11 +190,22 @@ def check_dataset_with_labels(dataset, num_samples=5, name="Dataset"):
         cv2.waitKey(250)
         cv2.destroyAllWindows()
 
+def check_label_distribution(dataset, name="Dataset"):
+    print(f"\n🔍 Checking label distribution in {name}...")
+    labels = []
+    for i in range(len(dataset)):
+        _, label, _ = dataset[i]
+        labels.append(label.item())
+    from collections import Counter
+    counts = Counter(labels)
+    print(f"Label counts: {dict(counts)}")
+    print(f"Total samples: {len(labels)}")
 
 # Run dataset checks before training
 #check_dataset_with_labels(train_dataset, name="Training Dataset")
 #check_dataset_with_labels(val_dataset, name="Validation Dataset")
-
+check_label_distribution(train_dataset, name="Training Dataset")
+check_label_distribution(val_dataset, name="Validation Dataset")
 
 criterion_bbox = nn.SmoothL1Loss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
@@ -337,7 +343,7 @@ def visualize_predictions(model, dataset, device, score_thresh=0.5, num_samples=
             x_max = int((x_c + bw / 2) * w)
             y_max = int((y_c + bh / 2) * h)
             cv2.rectangle(img_np, (x_min, y_min), (x_max, y_max), (0, 0, 255), 2)
-            cv2.putText(img_np, f"Pred: {pred_label} ({score:.2f})", 
+            cv2.putText(img_np, f"({score:.2f})", 
                         (x_min, max(y_min-5,0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
 
