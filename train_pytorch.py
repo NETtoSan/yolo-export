@@ -69,18 +69,22 @@ class SimpleYoloNet(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Dropout(0.3),
+
             nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.Dropout(0.3),
+
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.Dropout(0.3),
+            
             nn.Conv2d(128, 256, 3, stride=2, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
             nn.Dropout(0.3),
+
             nn.Conv2d(256, 512, 3, stride=2, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(),
@@ -93,9 +97,11 @@ class SimpleYoloNet(nn.Module):
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Dropout(0.5),
+
             nn.Linear(256, 128),
             nn.ReLU(),
             nn.Dropout(0.5),
+
             nn.Linear(128, 4),
             nn.Sigmoid()  # constrain outputs to [0, 1] for normalized bbox
         )
@@ -310,16 +316,16 @@ def visualize_bbox_centers(dataset):
 
 
 # Paths
-img_dir = './yolov8/bottle/train/images'
-label_dir = './yolov8/bottle/train/labels'
-val_img_dir = './yolov8/bottle/valid/images'
-val_label_dir = './yolov8/bottle/valid/labels'
+img_dir = './yolov11/bottlesv11/train/images'
+label_dir = './yolov11/bottlesv11/train/labels'
+val_img_dir = './yolov11/bottlesv11/valid/images'
+val_label_dir = './yolov11/bottlesv11/valid/labels'
 
 # Dataset and DataLoader
 train_dataset = YoloDataset(img_dir, label_dir)
-train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 val_dataset = YoloDataset(val_img_dir, val_label_dir)
-val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False)
+val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 
 print_label_distribution(train_dataset, name="Training set")
 print_label_distribution(val_dataset, name="Validation set")
@@ -343,7 +349,7 @@ else:
 
 criterion_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 criterion_bbox = nn.SmoothL1Loss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+optimizer = optim.Adam(model.parameters(), lr=1e-3) # , weight_decay=1e-4
 
 # Visualize the data
 #visualize_bbox_centers(train_dataset)
@@ -381,7 +387,7 @@ try:
         validate(model, val_loader, criterion_cls, criterion_bbox, device)
 
         print(f"Detecting 30 images from validation set after epoch {epoch+1}...")
-        detect_and_visualize(model, val_dataset, device, num_images=10, epoch_num=epoch+1)
+        detect_and_visualize(model, val_dataset, device, num_images=30, epoch_num=epoch+1)
     # Save model
     torch.save(model.state_dict(), 'simple_custom_model.pt')
     cv2.destroyAllWindows()
