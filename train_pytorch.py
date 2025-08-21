@@ -250,6 +250,7 @@ def print_label_distribution(dataset, name="Dataset"):
         sys.stdout.write(f"\rChecking [{i+1}/{len(dataset)}] ...")
         sys.stdout.flush()
     print(f"\n{name} label distribution: {pos_count} positive, {neg_count} negative samples.")
+    return pos_count, neg_count
 
 # --- Ground Truth Bounding Box Visualization ---
 def visualize_ground_truth(dataset, num_images=10):
@@ -321,14 +322,24 @@ print_label_distribution(val_dataset, name="Validation set")
 if torch.cuda.is_available():
     device = torch.device('cuda')
     print('Using CUDA for training.')
-device = torch.device('cpu')
-print('Using CPU for training.')
+else:
+    device = torch.device('cpu')
+    print('Using CPU for training.')
 
 model = SimpleYoloNet().to(device)
-criterion_cls = nn.BCEWithLogitsLoss()
+
+# Dynamically get class distribution for weighting
+num_pos, num_neg = print_label_distribution(train_dataset, name="Training set")
+if num_pos > 0:
+    pos_weight = torch.tensor([num_neg / num_pos], device=device)
+else:
+    pos_weight = torch.tensor([1.0], device=device)
+
+criterion_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 criterion_bbox = nn.SmoothL1Loss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
+# Visualize the data
 #visualize_bbox_centers(train_dataset)
 visualize_ground_truth(train_dataset, num_images=10)
 
