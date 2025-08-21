@@ -11,30 +11,33 @@ import numpy as np
 
 img_loss = 0
 class YoloDataset(Dataset):
-    def __init__(self, img_dir, label_dir, transform=None):
+    def __init__(self, img_dir, label_dir, transform=None, clean_missing_labels=False):
         self.img_dir = img_dir
         self.label_dir = label_dir
         self.transform = transform if transform else transforms.ToTensor()
         self.img_files = [f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
         self.missing_labels = []
         self.cleaned_files = []
-        for f in self.img_files:
-            label_path = os.path.join(self.label_dir, os.path.splitext(f)[0] + '.txt')
-            if not os.path.exists(label_path) or os.path.getsize(label_path) == 0:
-                self.missing_labels.append(f)
-                # Mark image file for exclusion if label is missing/empty
-                self.cleaned_files.append(f)
-        # Remove marked files from img_files (do not delete from disk)
-        self.img_files = [f for f in self.img_files if f not in self.cleaned_files]
-        print(f"Total images after cleanup: {len(self.img_files)}")
-        print(f"Images excluded due to missing/empty label files: {len(self.cleaned_files)}")
-        if self.cleaned_files:
-            print("Sample excluded files:")
-            for fname in self.cleaned_files[:10]:
-                print(f" - {fname}")
+        if clean_missing_labels:
+            for f in self.img_files:
+                label_path = os.path.join(self.label_dir, os.path.splitext(f)[0] + '.txt')
+                if not os.path.exists(label_path) or os.path.getsize(label_path) == 0:
+                    self.missing_labels.append(f)
+                    # Mark image file for exclusion if label is missing/empty
+                    self.cleaned_files.append(f)
+            # Remove marked files from img_files (do not delete from disk)
+            self.img_files = [f for f in self.img_files if f not in self.cleaned_files]
+            print(f"Total images after cleanup: {len(self.img_files)}")
+            print(f"Images excluded due to missing/empty label files: {len(self.cleaned_files)}")
+            if self.cleaned_files:
+                print("Sample excluded files:")
+                for fname in self.cleaned_files[:10]:
+                    print(f" - {fname}")
+            else:
+                print("No files excluded.")
+            print()
         else:
-            print("No files excluded.")
-        print()
+            print(f"Total images (no cleanup): {len(self.img_files)}")
 
     def __len__(self):
         return len(self.img_files)
@@ -53,7 +56,7 @@ class YoloDataset(Dataset):
             label = 1
             bbox = torch.tensor([float(x) for x in line[1:5]], dtype=torch.float32)
         else:
-            print(f"Warning: Missing or empty label file for {img_name}. Using default values.")
+            #print(f"Warning: Missing or empty label file for {img_name}. Using default values.")
             label = 0
             bbox = torch.zeros(4)
         return image, torch.tensor(label, dtype=torch.float32), bbox
@@ -80,6 +83,7 @@ class SimpleYoloNet(nn.Module):
             nn.AdaptiveAvgPool2d((1,1)),
         )
         self.classifier = nn.Linear(512, 1)      # Objectness score
+        
         # Improved bounding box regressor: deeper MLP + sigmoid
         self.bbox_regressor = nn.Sequential(
             nn.Linear(512, 256),
@@ -136,6 +140,9 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
             class_logits, bbox_preds = model(images)
             scores = torch.sigmoid(class_logits).squeeze(1)
             pred_labels = (scores >= score_thresh).long()
+            if batch_idx == 0:
+                print("\n[DEBUG] First batch logits:", class_logits.squeeze().detach().cpu().numpy())
+                print("[DEBUG] First batch labels:", labels.squeeze().detach().cpu().numpy())
             for i in range(images.size(0)):
                 gt_label = int(labels[i].item())
                 pred_label = int(pred_labels[i].item())
@@ -231,43 +238,18 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5,
         cv2.waitKey(50)
     print(f"Detection accuracy: {correct}/{total} ({(correct/total)*100:.2f}%)\n")
 
-
-# Paths
-img_dir = './yolov11/bottlesv11/train/images'
-label_dir = './yolov11/bottlesv11/train/labels'
-val_img_dir = './yolov11/bottlesv11/valid/images'
-val_label_dir = './yolov11/bottlesv11/valid/labels'
-
-# Dataset and DataLoader
-train_dataset = YoloDataset(img_dir, label_dir)
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-val_dataset = YoloDataset(val_img_dir, val_label_dir)
-val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
-
-# Print label distribution in validation set
-pos_count = 0
-neg_count = 0
-for i in range(len(val_dataset)):
-    _, label, _ = val_dataset[i]
-    if int(label.item()) == 1:
-        pos_count += 1
-    else:
-        neg_count += 1
-print(f"Validation set label distribution: {pos_count} positive, {neg_count} negative samples.")
-
-# Model, Loss, Optimizer
-if torch.cuda.is_available():
-    device = torch.device('cuda')
-    print('Using CUDA for training.')
-else:
-    device = torch.device('cpu')
-    print('CUDA not available. Using CPU for training.')
-
-model = SimpleYoloNet().to(device)
-criterion_cls = nn.BCEWithLogitsLoss()
-criterion_bbox = nn.SmoothL1Loss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
-
+def print_label_distribution(dataset, name="Dataset"):
+    pos_count = 0
+    neg_count = 0
+    for i in range(len(dataset)):
+        _, label, _ = dataset[i]
+        if int(label.item()) == 1:
+            pos_count += 1
+        else:
+            neg_count += 1
+        sys.stdout.write(f"\rChecking [{i+1}/{len(dataset)}] ...")
+        sys.stdout.flush()
+    print(f"\n{name} label distribution: {pos_count} positive, {neg_count} negative samples.")
 
 # --- Ground Truth Bounding Box Visualization ---
 def visualize_ground_truth(dataset, num_images=10):
@@ -303,7 +285,7 @@ def visualize_bbox_centers(dataset):
         x_centers.append(x_c)
         y_centers.append(y_c)
 
-        sys.stdout.write(f"\rProcessing bbox center {i+1}/{len(dataset)}: x={x_c:.3f}, y={y_c:.3f}")
+        sys.stdout.write(f"\rProcessing bbox center [{i+1}/{len(dataset)}]: x={x_c:.3f}, y={y_c:.3f}")
         sys.stdout.flush()
 
     print()
@@ -319,7 +301,35 @@ def visualize_bbox_centers(dataset):
     plt.show()
     '''
 
-visualize_bbox_centers(train_dataset)
+
+# Paths
+img_dir = './yolov8/bottle/train/images'
+label_dir = './yolov8/bottle/train/labels'
+val_img_dir = './yolov8/bottle/valid/images'
+val_label_dir = './yolov8/bottle/valid/labels'
+
+# Dataset and DataLoader
+train_dataset = YoloDataset(img_dir, label_dir)
+train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+val_dataset = YoloDataset(val_img_dir, val_label_dir)
+val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False)
+
+print_label_distribution(train_dataset, name="Training set")
+print_label_distribution(val_dataset, name="Validation set")
+
+# Model, Loss, Optimizer
+if torch.cuda.is_available():
+    device = torch.device('cuda')
+    print('Using CUDA for training.')
+device = torch.device('cpu')
+print('Using CPU for training.')
+
+model = SimpleYoloNet().to(device)
+criterion_cls = nn.BCEWithLogitsLoss()
+criterion_bbox = nn.SmoothL1Loss()
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+#visualize_bbox_centers(train_dataset)
 visualize_ground_truth(train_dataset, num_images=10)
 
 epoch_loop = 400
@@ -327,7 +337,7 @@ try:
     for epoch in range(epoch_loop):
         model.train()
         batchsize = len(train_loader)
-        img_loss = len(train_dataset.missing_labels)
+        img_loss = 0  # No missing_labels attribute anymore
         for batch_idx, (images, labels, bboxes) in enumerate(train_loader):
             images, labels, bboxes = images.to(device), labels.to(device).unsqueeze(1), bboxes.to(device)
             class_logits, bbox_preds = model(images)
