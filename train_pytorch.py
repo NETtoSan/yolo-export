@@ -189,8 +189,8 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5,
     correct = 0
     total = 0
     # Prepare output directory
-    out_dir = f'./output/epoch{epoch_num}' if epoch_num is not None else './output/epoch'
-    os.makedirs(out_dir, exist_ok=True)
+    #out_dir = f'./output/epoch{epoch_num}' if epoch_num is not None else './output/epoch'
+    #os.makedirs(out_dir, exist_ok=True)
     for idx in indices:
         image, label, bbox_gt = dataset[idx]
         img_tensor = image.unsqueeze(0).to(device)
@@ -232,8 +232,8 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5,
             cv2.putText(img_np, f"Pred: {pred_label} ({score:.2f})", (x_min, max(y_min-5,0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
         # Save image to output directory
-        out_path = os.path.join(out_dir, f'detect_{idx}.jpg')
-        cv2.imwrite(out_path, img_np)
+        #out_path = os.path.join(out_dir, f'detect_{idx}.jpg')
+        #cv2.imwrite(out_path, img_np)
         cv2.imshow("Detection", img_np)
         cv2.waitKey(50)
     print(f"Detection accuracy: {correct}/{total} ({(correct/total)*100:.2f}%)\n")
@@ -337,7 +337,7 @@ else:
 
 criterion_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 criterion_bbox = nn.SmoothL1Loss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
+optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
 
 # Visualize the data
 #visualize_bbox_centers(train_dataset)
