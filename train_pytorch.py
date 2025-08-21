@@ -176,18 +176,21 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
     print(f"\nmAP@{iou_threshold}: Precision={precision:.4f}, Recall={recall:.4f}, TP={true_positives}, FP={false_positives}, FN={false_negatives}")
     #return precision, recall
 
-def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5):
+def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5, epoch_num=None):
     model.eval()
     indices = np.random.choice(len(dataset), min(num_images, len(dataset)), replace=False)
     correct = 0
     total = 0
+    # Prepare output directory
+    out_dir = f'./output/epoch{epoch_num}' if epoch_num is not None else './output/epoch'
+    os.makedirs(out_dir, exist_ok=True)
     for idx in indices:
         image, label, bbox_gt = dataset[idx]
         img_tensor = image.unsqueeze(0).to(device)
         with torch.no_grad():
             class_logits, bbox_pred = model(img_tensor)
             score = torch.sigmoid(class_logits).squeeze().item()
-            pred_label = 1 if score >= score_thresh else 0  # Fix threshold logic
+            pred_label = 1 if score >= score_thresh else 0
         total += 1
         is_correct = pred_label == int(label.item())
         if is_correct:
@@ -221,6 +224,9 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5)
             cv2.rectangle(img_np, (x_min, y_min), (x_max, y_max), (0, 0, 255), 2)
             cv2.putText(img_np, f"Pred: {pred_label} ({score:.2f})", (x_min, max(y_min-5,0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+        # Save image to output directory
+        out_path = os.path.join(out_dir, f'detect_{idx}.jpg')
+        cv2.imwrite(out_path, img_np)
         cv2.imshow("Detection", img_np)
         cv2.waitKey(50)
     print(f"Detection accuracy: {correct}/{total} ({(correct/total)*100:.2f}%)\n")
@@ -265,8 +271,6 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 # --- Ground Truth Bounding Box Visualization ---
 def visualize_ground_truth(dataset, num_images=10):
-    import cv2
-    import numpy as np
     print(f"\nVisualizing {num_images} ground truth bounding boxes...")
     indices = np.random.choice(len(dataset), min(num_images, len(dataset)), replace=False)
     for idx in indices:
@@ -303,6 +307,7 @@ def visualize_bbox_centers(dataset):
         sys.stdout.flush()
 
     print()
+    '''
     plt.figure(figsize=(6,6))
     plt.scatter(x_centers, y_centers, alpha=0.5)
     plt.title('Ground Truth Bounding Box Centers')
@@ -312,11 +317,12 @@ def visualize_bbox_centers(dataset):
     plt.ylim(0, 1)
     plt.grid(True)
     plt.show()
+    '''
 
 visualize_bbox_centers(train_dataset)
 visualize_ground_truth(train_dataset, num_images=10)
 
-epoch_loop = 50
+epoch_loop = 400
 try:
     for epoch in range(epoch_loop):
         model.train()
@@ -337,7 +343,7 @@ try:
             bbox_max = bbox_preds.max().item()
             bbox_mean = bbox_preds.mean().item()
             sys.stdout.write(
-                f"\rEpoch [{epoch+1}/{epoch_loop}] Batch [{batch_idx+1}/{batchsize}] [Missing labels: {img_loss}] Loss: {loss.item():.4f} | loss_cls: {loss_cls.item():.4f}, loss_bbox: {loss_bbox.item():.4f} | bbox_out: min={bbox_min:.3f}, max={bbox_max:.3f}, mean={bbox_mean:.3f}"
+                f"\rEpoch [{epoch+1}/{epoch_loop}] Batch [{batch_idx+1}/{batchsize}] [Missing labels: {img_loss}] Loss: {loss.item():.4f} | loss_cls: {loss_cls.item():.4f}, loss_bbox: {loss_bbox.item():.4f}" #| bbox_out: min={bbox_min:.3f}, max={bbox_max:.3f}, mean={bbox_mean:.3f}
             )
             sys.stdout.flush()
 
@@ -348,9 +354,9 @@ try:
         validate(model, val_loader, criterion_cls, criterion_bbox, device)
 
         print(f"Detecting 30 images from validation set after epoch {epoch+1}...")
-        detect_and_visualize(model, val_dataset, device, num_images=50)
+        detect_and_visualize(model, val_dataset, device, num_images=10, epoch_num=epoch+1)
     # Save model
-    torch.save(model.state_dict(), 'simple_yolo_model.pt')
+    torch.save(model.state_dict(), 'simple_custom_model.pt')
     cv2.destroyAllWindows()
 except KeyboardInterrupt:
     print("\nTraining interrupted by user. Exiting cleanly...")
