@@ -307,7 +307,8 @@ def visualize_model_layers_and_weights(model, img_tensor):
             visuals_fixed.append(vis)
         final_vis = cv2.vconcat(visuals_fixed)
         cv2.imshow("Model Layers & BBox Visualization", final_vis)
-        cv2.waitKey(50)
+
+        
 def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5, epoch_num=None):
     model.eval()
     indices = np.random.choice(len(dataset), min(num_images, len(dataset)), replace=False)
@@ -361,7 +362,7 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5,
         #cv2.imwrite(out_path, img_np)
         cv2.imshow("Detection", img_np)
         
-        visualize_model_layers_and_weights(model, img_tensor)
+        #visualize_model_layers_and_weights(model, img_tensor)
         #visualize_model_graph(model, img_tensor)
         cv2.waitKey(50)
     print(f"Detection accuracy: {correct}/{total} ({(correct/total)*100:.2f}%)\n")
