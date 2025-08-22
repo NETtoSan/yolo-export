@@ -7,6 +7,7 @@ from PIL import Image
 import os
 import sys
 import cv2
+import graphviz
 import numpy as np
 
 img_loss = 0
@@ -53,7 +54,7 @@ class YoloDataset(Dataset):
                 line = f.readline().strip().split()
             # Treat any object as label=1 for training
             #print(int(line[0]))
-            label = 1
+            label = 1 #(int(line[0]))
             bbox = torch.tensor([float(x) for x in line[1:5]], dtype=torch.float32)
         else:
             #print(f"Warning: Missing or empty label file for {img_name}. Using default values.")
@@ -68,23 +69,23 @@ class SimpleYoloNet(nn.Module):
             nn.Conv2d(3, 32, 3, stride=2, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            #nn.Dropout(0.3),
 
             nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            #nn.Dropout(0.3),
 
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            
+            #nn.Dropout(0.3),
+
             nn.Conv2d(128, 256, 3, stride=2, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
-            nn.Dropout(0.3),
-
+            #nn.Dropout(0.3),
+            
             nn.Conv2d(256, 512, 3, stride=2, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(),
@@ -96,12 +97,8 @@ class SimpleYoloNet(nn.Module):
         self.bbox_regressor = nn.Sequential(
             nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Dropout(0.5),
-
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Dropout(0.5),
-
             nn.Linear(128, 4),
             nn.Sigmoid()  # constrain outputs to [0, 1] for normalized bbox
         )
@@ -195,6 +192,122 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
     print(f"\nmAP@{iou_threshold}: Precision={precision:.4f}, Recall={recall:.4f}, TP={true_positives}, FP={false_positives}, FN={false_negatives}")
     #return precision, recall
 
+def visualize_model_layers_and_weights(model, img_tensor):
+    import torch.nn as nn
+    import cv2
+    import numpy as np
+    feature_imgs = []
+    feature_names = []
+    overlay_imgs = []
+    overlay_names = []
+    with torch.no_grad():
+        x = img_tensor
+        # Prepare input image for overlay
+        input_img = img_tensor.squeeze().cpu().numpy()
+        if input_img.ndim == 3:
+            input_img = input_img[:3]
+            input_img = (input_img - input_img.min()) / (input_img.ptp() + 1e-5) * 255
+            input_img = input_img.astype(np.uint8)
+            input_img = np.transpose(input_img, (1,2,0))
+        else:
+            input_img = (input_img - input_img.min()) / (input_img.ptp() + 1e-5) * 255
+            input_img = input_img.astype(np.uint8)
+            input_img = cv2.cvtColor(input_img, cv2.COLOR_GRAY2BGR)
+        # Save input image for overlays
+        base_img = input_img.copy()
+        # For each layer, get feature map and overlay
+        for i, layer in enumerate(model.features):
+            x = layer(x)
+            if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.ReLU):
+                act = x.squeeze().detach().cpu().numpy()
+                if act.ndim == 3:
+                    # Feature map visualization
+                    act_img = act[:3]
+                    act_img = (act_img - act_img.min()) / (act_img.ptp() + 1e-5) * 255
+                    act_img = act_img.astype(np.uint8)
+                    act_img = np.transpose(act_img, (1,2,0))
+                    feature_imgs.append(act_img)
+                elif act.ndim == 2:
+                    act_img = (act - act.min()) / (act.ptp() + 1e-5) * 255
+                    act_img = act_img.astype(np.uint8)
+                    feature_imgs.append(cv2.cvtColor(act_img, cv2.COLOR_GRAY2BGR))
+                feature_names.append(f"{layer.__class__.__name__}_{i}")
+                # Overlay feature map (first channel as heatmap) on input image
+                fmap = act[0] if act.ndim == 3 else act
+                fmap = (fmap - fmap.min()) / (fmap.ptp() + 1e-5)
+                fmap = (fmap * 255).astype(np.uint8)
+                fmap = cv2.resize(fmap, (base_img.shape[1], base_img.shape[0]))
+                heatmap = cv2.applyColorMap(fmap, cv2.COLORMAP_JET)
+                overlay = cv2.addWeighted(base_img, 0.6, heatmap, 0.4, 0)
+                overlay_imgs.append(overlay)
+                overlay_names.append(f"Overlay_{layer.__class__.__name__}_{i}")
+        # Final output: get bounding box and confidence
+        x_flat = x.view(x.size(0), -1)
+        class_logits = model.classifier(x_flat)
+        bbox = model.bbox_regressor(x_flat)
+        score = torch.sigmoid(class_logits).squeeze().item()
+        pred_label = 1 if score >= 0.5 else 0
+        bbox_np = bbox.squeeze().detach().cpu().numpy()
+        h, w = base_img.shape[:2]
+        x_c, y_c, bw, bh = bbox_np
+        x_min = int((x_c - bw / 2) * w)
+        y_min = int((y_c - bh / 2) * h)
+        x_max = int((x_c + bw / 2) * w)
+        y_max = int((y_c + bh / 2) * h)
+        img_bbox = base_img.copy()
+        cv2.rectangle(img_bbox, (x_min, y_min), (x_max, y_max), (0, 0, 255), 2)
+        cv2.putText(img_bbox, f"Conf: {score:.2f}", (x_min, max(y_min-5,0)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+        # Show all visualizations
+        target_h = 128  # Increased from 64
+        name_bar_h = 28 # Increased from 18
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.7 # Increased from 0.5
+        thickness = 2    # Increased from 1
+        # Feature maps
+        all_imgs = feature_imgs
+        all_names = feature_names
+        resized_imgs = [cv2.resize(img, (target_h, target_h)) for img in all_imgs]
+        img_with_names = []
+        for img, name in zip(resized_imgs, all_names):
+            bar = np.ones((name_bar_h, target_h, 3), dtype=np.uint8) * 255
+            cv2.putText(bar, name, (4, name_bar_h-6), font, font_scale, (0,0,0), thickness, cv2.LINE_AA)
+            img_with_names.append(np.vstack([img, bar]))
+        tiled_features = cv2.hconcat(img_with_names) if img_with_names else None
+        # Overlays
+        overlay_h = 256  # Increased from 128
+        overlay_imgs_resized = [cv2.resize(img, (overlay_h, overlay_h)) for img in overlay_imgs]
+        overlay_with_names = []
+        for img, name in zip(overlay_imgs_resized, overlay_names):
+            bar = np.ones((name_bar_h, overlay_h, 3), dtype=np.uint8) * 255
+            cv2.putText(bar, name, (4, name_bar_h-6), font, font_scale, (0,0,0), thickness, cv2.LINE_AA)
+            overlay_with_names.append(np.vstack([img, bar]))
+        tiled_overlays = cv2.hconcat(overlay_with_names) if overlay_with_names else None
+        # Show input with bbox
+        img_bbox_disp = cv2.resize(img_bbox, (256,256)) # Increased from 128
+        bar = np.ones((name_bar_h, 256, 3), dtype=np.uint8) * 255
+        cv2.putText(bar, "Input+BBox", (4, name_bar_h-6), font, font_scale, (0,0,0), thickness, cv2.LINE_AA)
+        img_bbox_disp = np.vstack([img_bbox_disp, bar])
+        # Combine all
+        visuals = [img_bbox_disp]
+        if tiled_features is not None:
+            visuals.append(tiled_features)
+        if tiled_overlays is not None:
+            visuals.append(tiled_overlays)
+        # Ensure all visuals have the same width and type
+        target_w = 256 # Increased from 128
+        visuals_fixed = []
+        for vis in visuals:
+            # Convert to 3-channel uint8 if needed
+            if vis.ndim == 2:
+                vis = cv2.cvtColor(vis, cv2.COLOR_GRAY2BGR)
+            if vis.shape[1] != target_w:
+                vis = cv2.resize(vis, (target_w, vis.shape[0]))
+            if vis.dtype != np.uint8:
+                vis = vis.astype(np.uint8)
+            visuals_fixed.append(vis)
+        final_vis = cv2.vconcat(visuals_fixed)
+        cv2.imshow("Model Layers & BBox Visualization", final_vis)
+        cv2.waitKey(50)
 def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5, epoch_num=None):
     model.eval()
     indices = np.random.choice(len(dataset), min(num_images, len(dataset)), replace=False)
@@ -247,6 +360,9 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.5,
         #out_path = os.path.join(out_dir, f'detect_{idx}.jpg')
         #cv2.imwrite(out_path, img_np)
         cv2.imshow("Detection", img_np)
+        
+        visualize_model_layers_and_weights(model, img_tensor)
+        #visualize_model_graph(model, img_tensor)
         cv2.waitKey(50)
     print(f"Detection accuracy: {correct}/{total} ({(correct/total)*100:.2f}%)\n")
 
@@ -327,9 +443,6 @@ train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 val_dataset = YoloDataset(val_img_dir, val_label_dir)
 val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 
-print_label_distribution(train_dataset, name="Training set")
-print_label_distribution(val_dataset, name="Validation set")
-
 # Model, Loss, Optimizer
 if torch.cuda.is_available():
     device = torch.device('cuda')
@@ -341,15 +454,17 @@ else:
 model = SimpleYoloNet().to(device)
 
 # Dynamically get class distribution for weighting
-num_pos, num_neg = print_label_distribution(train_dataset, name="Training set")
-if num_pos > 0:
-    pos_weight = torch.tensor([num_neg / num_pos], device=device)
-else:
-    pos_weight = torch.tensor([1.0], device=device)
+#num_pos, num_neg = 
+#if num_pos > 0:
+#    pos_weight = torch.tensor([num_neg / num_pos], device=device)
+#else:
+#    pos_weight = torch.tensor([1.0], device=device)
+print_label_distribution(train_dataset, name="Training set")
+print_label_distribution(val_dataset, name="Validation set")
 
-criterion_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+criterion_cls = nn.BCEWithLogitsLoss()#pos_weight=pos_weight)
 criterion_bbox = nn.SmoothL1Loss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3) # , weight_decay=1e-4
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 # Visualize the data
 #visualize_bbox_centers(train_dataset)
