@@ -108,6 +108,7 @@ class SimpleYoloNet(nn.Module):
     def forward(self, x):
         x = self.features(x)
         x = x.view(x.size(0), -1)
+        
         class_logits = self.classifier(x)
         bbox = self.bbox_regressor(x)
         return class_logits, bbox
@@ -191,7 +192,7 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
             sys.stdout.flush()
     precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
     recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
-    print(f"\nmAP@{iou_threshold}: Precision={precision:.4f}, Recall={recall:.4f}, TP={true_positives}, FP={false_positives}, FN={false_negatives}")
+    print(f"\nmAP@{iou_threshold}: Precision: {precision:.4f}, Recall: {recall:.4f}, TP: {true_positives}, FP: {false_positives}, FN: {false_negatives}")
     #return precision, recall
 
 def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.3, epoch_num=None):
@@ -217,7 +218,7 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.3,
             correct += 1
         
         sys.stdout.write(
-            f"\rImage [{correct}|{img_count}] {idx}: GT label={int(label.item())}, Pred label={pred_label}, Score={score:.4f}, Correct={is_correct}"
+            f"\rImage [{correct}|{img_count}] {idx}: GT label: {int(label.item())}, Pred label: {pred_label}, Score: {score:.4f}, Correct: {is_correct}"
         )
         #    f"\r    >Ground Truth bbox: {bbox_gt.numpy()}\n"
         #    f"\r    >Predicted bbox: {bbox_pred.squeeze().cpu().numpy() if score >= score_thresh else '[No prediction above threshold]'}\n"
@@ -290,8 +291,6 @@ def visualize_ground_truth(dataset, num_images=10):
         cv2.waitKey(300)
     cv2.destroyAllWindows()
     print("Visualization complete.\n")
-
-
 # Visualize ground truth bounding box centers
 def visualize_bbox_centers(dataset):
     import matplotlib.pyplot as plt
@@ -359,6 +358,8 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3) #, weight_decay=1e-4)
 #visualize_bbox_centers(train_dataset)
 visualize_ground_truth(train_dataset, num_images=10)
 
+
+# Train epoch
 epoch_loop = 400
 try:
     for epoch in range(epoch_loop):
