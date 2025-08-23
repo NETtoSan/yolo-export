@@ -16,28 +16,40 @@ class SimpleYoloNet(nn.Module):
             nn.Conv2d(3, 32, 3, stride=2, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
+            #nn.Dropout(0.3),
+
             nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
+            #nn.Dropout(0.3),
+
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
+            #nn.Dropout(0.3),
+            
             nn.Conv2d(128, 256, 3, stride=2, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
+            #nn.Dropout(0.3),
+
             nn.Conv2d(256, 512, 3, stride=2, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(),
             nn.AdaptiveAvgPool2d((1,1)),
         )
         self.classifier = nn.Linear(512, 1)      # Objectness score
+        
+        # Improved bounding box regressor: deeper MLP + sigmoid
         self.bbox_regressor = nn.Sequential(
+            nn.Linear(512, 512),
+            nn.ReLU(),
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Linear(128, 4),
-            nn.Sigmoid()  # constrain outputs to [0, 1] for normalized bbox
+            nn.Linear(128, 4)
+            #nn.Sigmoid()  # constrain outputs to [0, 1] for normalized bbox
         )
 
     def forward(self, x):
@@ -52,7 +64,7 @@ class SimpleYoloNet(nn.Module):
 # ------------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = SimpleYoloNet().to(device)
-model.load_state_dict(torch.load("simple_yolo_model.pt", map_location=device))
+model.load_state_dict(torch.load("simple_custom_model.pt", map_location=device))
 model.eval()
 
 # ------------------------------

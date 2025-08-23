@@ -12,7 +12,7 @@ import numpy as np
 img_loss = 0
 
 class YoloDataset(Dataset):
-    def __init__(self, img_dir, label_dir, transform=None, clean_missing_labels=True):
+    def __init__(self, img_dir, label_dir, transform=None, clean_missing_labels=False):
         self.img_dir = img_dir
         self.label_dir = label_dir
         self.transform = transform if transform else transforms.ToTensor()
@@ -58,7 +58,7 @@ class YoloDataset(Dataset):
             bbox = torch.tensor([float(x) for x in line[1:5]], dtype=torch.float32)
         else:
             #print(f"Warning: Missing or empty label file for {img_name}. Using default values.")
-            label = 0
+            label = 0 # Label = 0; background images
             bbox = torch.zeros(4)
         return image, torch.tensor(label, dtype=torch.float32), bbox
 
@@ -133,7 +133,7 @@ def validate(model, dataloader, criterion_cls, criterion_bbox, device):
             )
             sys.stdout.flush()
     avg_loss = total_loss / len(dataloader.dataset)
-    print(f"\nValidation Loss: {avg_loss:.4f}")
+    print(f"\n      >Validation Loss: {avg_loss:.4f}")
     #return avg_loss
 
 def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5):
@@ -152,8 +152,8 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
             scores = torch.sigmoid(class_logits).squeeze(1)
             pred_labels = (scores >= score_thresh).long()
             if batch_idx == 0:
-                print("\n[DEBUG] First batch logits:", class_logits.squeeze().detach().cpu().numpy())
-                print("[DEBUG] First batch labels:", labels.squeeze().detach().cpu().numpy())
+                print("       >[DEBUG] First batch logits:", class_logits.squeeze().detach().cpu().numpy())
+                print("       >[DEBUG] First batch labels:", labels.squeeze().detach().cpu().numpy())
             for i in range(images.size(0)):
                 gt_label = int(labels[i].item())
                 pred_label = int(pred_labels[i].item())
@@ -365,12 +365,15 @@ try:
         model.train()
         batchsize = len(train_loader)
         img_loss = 0  # No missing_labels attribute anymore
+        
         for batch_idx, (images, labels, bboxes) in enumerate(train_loader):
             images, labels, bboxes = images.to(device), labels.to(device).unsqueeze(1), bboxes.to(device)
+            
             class_logits, bbox_preds = model(images)
             loss_cls = criterion_cls(class_logits, labels)
             loss_bbox = criterion_bbox(bbox_preds, bboxes)
             loss = loss_cls + 5.0 * loss_bbox  # Further increased bbox loss weight
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
