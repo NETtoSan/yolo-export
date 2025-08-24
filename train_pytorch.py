@@ -8,6 +8,7 @@ import os
 import sys
 import cv2
 import numpy as np
+import time
 
 img_loss = 0
 
@@ -63,53 +64,50 @@ class YoloDataset(Dataset):
         return image, torch.tensor(label, dtype=torch.float32), bbox
 
 class SimpleYoloNet(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=2):  # Default to 2 classes (background + object)
         super().__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 32, 3, stride=2, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            #nn.Dropout(0.3),
 
             nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            #nn.Dropout(0.3),
 
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            #nn.Dropout(0.3),
-            
+
             nn.Conv2d(128, 256, 3, stride=2, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
-            #nn.Dropout(0.3),
-
+            
             nn.Conv2d(256, 512, 3, stride=2, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1,1)),
+            #nn.MaxPool2d(kernel_size=7)
+            nn.AdaptiveAvgPool2d((1, 1))
         )
-        self.classifier = nn.Linear(512, 1)      # Objectness score
+        self.classifier = nn.Linear(512, num_classes)  # Output logits for each class
         
-        # Improved bounding box regressor: deeper MLP + sigmoid
         self.bbox_regressor = nn.Sequential(
             nn.Linear(512, 512),
             nn.ReLU(),
+
             nn.Linear(512, 256),
             nn.ReLU(),
+
             nn.Linear(256, 128),
             nn.ReLU(),
+
             nn.Linear(128, 4)
-            #nn.Sigmoid()  # constrain outputs to [0, 1] for normalized bbox
         )
 
     def forward(self, x):
         x = self.features(x)
         x = x.view(x.size(0), -1)
-        
-        class_logits = self.classifier(x)
+        class_logits = self.classifier(x)  # Shape: [batch_size, num_classes]
         bbox = self.bbox_regressor(x)
         return class_logits, bbox
 
@@ -119,7 +117,10 @@ def validate(model, dataloader, criterion_cls, criterion_bbox, device):
     batchsize = len(dataloader)
     with torch.no_grad():
         for batch_idx, (images, labels, bboxes) in enumerate(dataloader):
-            images, labels, bboxes = images.to(device), labels.to(device).unsqueeze(1), bboxes.to(device)
+            images = images.to(device)
+            labels = labels.to(device).long().view(-1)  # Ensure labels are 1D and integer
+            bboxes = bboxes.to(device)
+
             class_logits, bbox_preds = model(images)
             loss_cls = criterion_cls(class_logits, labels)
             loss_bbox = criterion_bbox(bbox_preds, bboxes)
@@ -157,7 +158,7 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
                 print("       >[DEBUG] First batch labels:", labels.squeeze().detach().cpu().numpy())
             for i in range(images.size(0)):
                 gt_label = int(labels[i].item())
-                pred_label = int(pred_labels[i].item())
+                pred_label = int(pred_labels[i].argmax().item())
                 gt_bbox = bboxes[i].cpu().numpy()
                 pred_bbox = bbox_preds[i].cpu().numpy()
                 # Calculate IoU
@@ -210,8 +211,10 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.3,
         img_tensor = image.unsqueeze(0).to(device)
         with torch.no_grad():
             class_logits, bbox_pred = model(img_tensor)
-            score = torch.sigmoid(class_logits).squeeze().item()
-            pred_label = 1 if score >= score_thresh else 0
+            probs = torch.softmax(class_logits, dim=1)
+            score, pred_label = torch.max(probs, dim=1)
+            score = score.item()
+            pred_label = pred_label.item()
         total += 1
         is_correct = pred_label == int(label.item())
         if is_correct:
@@ -259,16 +262,25 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.3,
 def print_label_distribution(dataset, name="Dataset"):
     pos_count = 0
     neg_count = 0
+    class_ids = set()
     for i in range(len(dataset)):
         _, label, _ = dataset[i]
-        if int(label.item()) == 1:
-            pos_count += 1
-        else:
+        label_int = int(label.item())
+        if label_int == 0:
             neg_count += 1
+        else:
+            pos_count += 1
+            class_ids.add(label_int)
         sys.stdout.write(f"\rChecking [{i+1}/{len(dataset)}] ...")
         sys.stdout.flush()
+    all_class_ids = set(class_ids)
+    all_class_ids.add(0)  # Include negative class
+    num_classes_incl_neg = len(all_class_ids)
     print(f"\n{name} label distribution: {pos_count} positive, {neg_count} negative samples.")
-    return pos_count, neg_count
+    print(f"        > Number of classes (including negatives): {num_classes_incl_neg}")
+    print(f"        > Class IDs (all): {sorted(all_class_ids)}")
+    return pos_count, neg_count, num_classes_incl_neg
+
 
 # --- Ground Truth Bounding Box Visualization ---
 def visualize_ground_truth(dataset, num_images=10):
@@ -320,10 +332,10 @@ def visualize_bbox_centers(dataset):
 
 
 # Paths
-img_dir = './yolov11/bottlesv11/train/images'
-label_dir = './yolov11/bottlesv11/train/labels'
-val_img_dir = './yolov11/bottlesv11/valid/images'
-val_label_dir = './yolov11/bottlesv11/valid/labels'
+img_dir = './yolov11/opencv_abu-20/train/images'
+label_dir = './yolov11/opencv_abu-20/train/labels'
+val_img_dir = './yolov11/opencv_abu-20/valid/images'
+val_label_dir = './yolov11/opencv_abu-20/valid/labels'
 
 # Dataset and DataLoader
 train_dataset = YoloDataset(img_dir, label_dir)
@@ -334,23 +346,24 @@ val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 # Model, Loss, Optimizer
 if torch.cuda.is_available():
     device = torch.device('cuda')
-    print('Using CUDA for training.')
+    print('[INFO] Using CUDA for training.')
 else:
     device = torch.device('cpu')
-    print('Using CPU for training.')
-
-model = SimpleYoloNet().to(device)
+    print('[INFO] Using CPU for training.')
 
 # Dynamically get class distribution for weighting
-num_pos, num_neg = print_label_distribution(train_dataset, name="Training set")
+num_pos, num_neg, num_classes = print_label_distribution(train_dataset, name="Training set")
 if num_pos > 0:
     pos_weight = torch.tensor([num_neg / num_pos], device=device)
 else:
     pos_weight = torch.tensor([1.0], device=device)
-
 print_label_distribution(val_dataset, name="Validation set")
 
-criterion_cls = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+model = SimpleYoloNet(num_classes=2).to(device)
+print("--------------------------"); print(model); print("--------------------------")
+time.sleep(2)
+
+criterion_cls = nn.CrossEntropyLoss() #nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 criterion_bbox = nn.MSELoss()   #nn.SmoothL1Loss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3) #, weight_decay=1e-4)
 
@@ -371,6 +384,7 @@ try:
             images, labels, bboxes = images.to(device), labels.to(device).unsqueeze(1), bboxes.to(device)
             
             class_logits, bbox_preds = model(images)
+            labels = labels.long().view(-1)  # Ensure labels are 1D and integer
             loss_cls = criterion_cls(class_logits, labels)
             loss_bbox = criterion_bbox(bbox_preds, bboxes)
             loss = loss_cls + 5.0 * loss_bbox  # Further increased bbox loss weight
