@@ -332,16 +332,16 @@ def visualize_bbox_centers(dataset):
 
 
 # Paths
-img_dir = './yolov11/opencv_abu-20/train/images'
-label_dir = './yolov11/opencv_abu-20/train/labels'
-val_img_dir = './yolov11/opencv_abu-20/valid/images'
-val_label_dir = './yolov11/opencv_abu-20/valid/labels'
+img_dir = './yolov11/bottlesv11/train/images'
+label_dir = './yolov11/bottlesv11/train/labels'
+val_img_dir = './yolov11/bottlesv11/valid/images'
+val_label_dir = './yolov11/bottlesv11/valid/labels'
 
 # Dataset and DataLoader
 train_dataset = YoloDataset(img_dir, label_dir)
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
 val_dataset = YoloDataset(val_img_dir, val_label_dir)
-val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
 
 # Model, Loss, Optimizer
 if torch.cuda.is_available():

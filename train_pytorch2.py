@@ -1,3 +1,8 @@
+def yolo_collate_fn(batch):
+    images = torch.stack([item[0] for item in batch], dim=0)
+    labels = [item[1] for item in batch]
+    boxes = [item[2] for item in batch]
+    return images, labels, boxes
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -76,14 +81,13 @@ class YoloDataset(Dataset):
                     if len(parts) >= 5:
                         labels.append(int(parts[0]) + 1)
                         boxes.append([float(x) for x in parts[1:5]])
+        else:
+            # No label file: treat as single negative
+            labels = [0]
+            boxes = [[0,0,0,0]]
 
-        # Pad to max_objects
-        while len(boxes) < self.max_objects:
-            boxes.append([0,0,0,0])
-            labels.append(-1)  # -1 for "no object"
-
-        boxes = torch.tensor(boxes[:self.max_objects], dtype=torch.float32)
-        labels = torch.tensor(labels[:self.max_objects], dtype=torch.long)
+        boxes = torch.tensor(boxes, dtype=torch.float32)
+        labels = torch.tensor(labels, dtype=torch.long)
         return image, labels, boxes
 
 class SimpleYoloNet(nn.Module):
@@ -93,16 +97,20 @@ class SimpleYoloNet(nn.Module):
             nn.Conv2d(3, 32, 3, stride=2, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+                nn.Dropout2d(0.2),
+                nn.Conv2d(32, 64, 3, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1),
+                nn.Dropout2d(0.2),
+                nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.Conv2d(128, 256, 3, stride=2, padding=1),
+                nn.Dropout2d(0.2),
+                nn.Conv2d(128, 256, 3, stride=2, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(),
-            nn.Conv2d(256, 512, 3, stride=2, padding=1),
+                nn.Dropout2d(0.2),
+                nn.Conv2d(256, 512, 3, stride=2, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(),
             nn.AdaptiveAvgPool2d((1, 1))
@@ -136,19 +144,25 @@ def validate(model, dataloader, criterion_cls, criterion_bbox, device):
     with torch.no_grad():
         for batch_idx, (images, labels, bboxes) in enumerate(dataloader):
             images = images.to(device)
-            labels = labels.to(device)
-            bboxes = bboxes.to(device)
+            labels = [lbl.to(device) for lbl in labels]
+            bboxes = [box.to(device) for box in bboxes]
             class_logits, bbox_preds = model(images)
-            # Flatten for loss
-            class_logits_flat = class_logits.view(-1, class_logits.size(-1))
-            labels_flat = labels.view(-1)
-            bbox_preds_flat = bbox_preds.view(-1, 4)
-            bboxes_flat = bboxes.view(-1, 4)
-            obj_mask = labels_flat != -1
-            if obj_mask.sum() > 0:
-                loss_cls = criterion_cls(class_logits_flat[obj_mask], labels_flat[obj_mask])
-                loss_bbox = criterion_bbox(bbox_preds_flat[obj_mask], bboxes_flat[obj_mask])
-                loss = loss_cls + 2.0 * loss_bbox
+            total_loss_batch = torch.tensor(0.0, device=device)
+            for i in range(len(labels)):
+                num_preds = class_logits[i].shape[0]
+                num_targets = labels[i].shape[0]
+                N = min(num_preds, num_targets)
+                logits_i = class_logits[i][:N]
+                bbox_preds_i = bbox_preds[i][:N]
+                labels_i = labels[i][:N]
+                bboxes_i = bboxes[i][:N]
+                obj_mask = labels_i != -1
+                if obj_mask.sum() > 0:
+                    loss_cls = criterion_cls(logits_i[obj_mask], labels_i[obj_mask])
+                    loss_bbox = criterion_bbox(bbox_preds_i[obj_mask], bboxes_i[obj_mask])
+                    total_loss_batch += loss_cls + 2.0 * loss_bbox
+            if len(labels) > 0:
+                loss = total_loss_batch / len(labels)
                 total_loss += loss.item() * images.size(0)
                 bbox_min = bbox_preds.min().item()
                 bbox_max = bbox_preds.max().item()
@@ -171,8 +185,8 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
     with torch.no_grad():
         for batch_idx, (images, labels, bboxes) in enumerate(dataloader):
             images = images.to(device)
-            labels = labels.to(device)
-            bboxes = bboxes.to(device)
+            labels = [lbl.to(device) for lbl in labels]
+            bboxes = [box.to(device) for box in bboxes]
             class_logits, bbox_preds = model(images)
             probs = torch.softmax(class_logits, dim=2)
             for i in range(images.size(0)):
@@ -247,7 +261,7 @@ def calculate_map(model, dataloader, device, iou_threshold=0.5, score_thresh=0.5
     print(f"\nmAP@{iou_threshold}: Precision: {precision:.4f}, Recall: {recall:.4f}, TP: {true_positives}, FP: {false_positives}, FN: {false_negatives}")
     #return precision, recall
 
-def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.3, epoch_num=None):
+def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.7, epoch_num=None):
     model.eval()
     indices = np.random.choice(len(dataset), min(num_images, len(dataset)), replace=False)
     correct = 0
@@ -291,7 +305,12 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.3,
                 continue
             boxes_cls = bbox_preds[cls_mask]
             scores_cls = pred_scores[cls_mask]
-            keep_idx = nms(boxes_cls, scores_cls, iou_threshold=0.5)
+            keep_idx = nms(boxes_cls, scores_cls, iou_threshold=0.4)
+            # Limit to top 5 boxes per class
+            if len(keep_idx) > 5:
+                # Sort by score and keep top 5
+                top_scores = scores_cls[keep_idx].argsort(descending=True)[:5]
+                keep_idx = [keep_idx[i] for i in top_scores.tolist()]
             for k in keep_idx:
                 nms_preds.append((boxes_cls[k].cpu().numpy(), int(cls.item()), scores_cls[k].item()))
         # Draw NMS-filtered predicted boxes in red
@@ -410,9 +429,9 @@ val_label_dir = './yolov11/bottlesv11/valid/labels'
 # Dataset and DataLoader
 max_objects = 10  # Set max objects per image
 train_dataset = YoloDataset(img_dir, label_dir, max_objects=max_objects)
-train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, collate_fn=yolo_collate_fn)
 val_dataset = YoloDataset(val_img_dir, val_label_dir, max_objects=max_objects)
-val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
+val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, collate_fn=yolo_collate_fn)
 
 # Model, Loss, Optimizer
 if torch.cuda.is_available():
@@ -434,7 +453,7 @@ model = SimpleYoloNet(num_classes=num_classes, max_objects=max_objects).to(devic
 print("--------------------------"); print(model); print("--------------------------")
 time.sleep(2)
 
-criterion_cls = nn.CrossEntropyLoss() #nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+criterion_cls = nn.CrossEntropyLoss(label_smoothing=0.1) #nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 criterion_bbox = nn.MSELoss()   #nn.SmoothL1Loss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3) #, weight_decay=1e-4)
 
@@ -453,20 +472,25 @@ try:
         
         for batch_idx, (images, labels, bboxes) in enumerate(train_loader):
             images = images.to(device)
-            labels = labels.to(device)
-            bboxes = bboxes.to(device)
+            labels = [lbl.to(device) for lbl in labels]
+            bboxes = [box.to(device) for box in bboxes]
             class_logits, bbox_preds = model(images)
-            # Flatten for loss
-            class_logits_flat = class_logits.view(-1, class_logits.size(-1))
-            labels_flat = labels.view(-1)
-            bbox_preds_flat = bbox_preds.view(-1, 4)
-            bboxes_flat = bboxes.view(-1, 4)
-            obj_mask = labels_flat != -1
-            if obj_mask.sum() > 0:
-
-                loss_cls = criterion_cls(class_logits_flat[obj_mask], labels_flat[obj_mask])
-                loss_bbox = criterion_bbox(bbox_preds_flat[obj_mask], bboxes_flat[obj_mask])
-                loss = loss_cls + 5.0 * loss_bbox
+            total_loss_batch = torch.tensor(0.0, device=device)
+            for i in range(len(labels)):
+                num_preds = class_logits[i].shape[0]
+                num_targets = labels[i].shape[0]
+                N = min(num_preds, num_targets)
+                logits_i = class_logits[i][:N]
+                bbox_preds_i = bbox_preds[i][:N]
+                labels_i = labels[i][:N]
+                bboxes_i = bboxes[i][:N]
+                obj_mask = labels_i != -1
+                if obj_mask.sum() > 0:
+                    loss_cls = criterion_cls(logits_i[obj_mask], labels_i[obj_mask])
+                    loss_bbox = criterion_bbox(bbox_preds_i[obj_mask], bboxes_i[obj_mask])
+                    total_loss_batch += loss_cls + 5.0 * loss_bbox
+            if len(labels) > 0 and total_loss_batch.requires_grad:
+                loss = total_loss_batch / len(labels)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
