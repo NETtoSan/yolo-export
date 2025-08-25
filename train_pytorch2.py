@@ -117,7 +117,12 @@ class SimpleYoloNet(nn.Module):
         )
         self.max_objects = max_objects
         self.num_classes = num_classes
-        self.classifier = nn.Linear(512, num_classes * max_objects)
+        # Improved classifier: deeper, non-linear, better for multi-object detection
+        self.classifier = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, num_classes * max_objects)
+        )
         self.bbox_regressor = nn.Sequential(
             nn.Linear(512, 512),
             nn.ReLU(),
@@ -297,7 +302,9 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.7,
             cv2.rectangle(img_np, (x_min_gt, y_min_gt), (x_max_gt, y_max_gt), (0, 255, 0), 2)
             cv2.putText(img_np, f"GT: {label}", (x_min_gt, max(y_min_gt-5,0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-        # Apply NMS per class for predictions
+        # --- NMS and top-k filtering ---
+        nms_iou_threshold = 0.3  # Lower threshold to reduce overlaps
+        top_k_per_class = 3      # Show up to 3 boxes per class
         nms_preds = []
         for cls in torch.unique(pred_labels):
             cls_mask = (pred_labels == cls) & (pred_scores >= score_thresh)
@@ -305,11 +312,10 @@ def detect_and_visualize(model, dataset, device, num_images=5, score_thresh=0.7,
                 continue
             boxes_cls = bbox_preds[cls_mask]
             scores_cls = pred_scores[cls_mask]
-            keep_idx = nms(boxes_cls, scores_cls, iou_threshold=0.4)
-            # Limit to top 5 boxes per class
-            if len(keep_idx) > 5:
-                # Sort by score and keep top 5
-                top_scores = scores_cls[keep_idx].argsort(descending=True)[:5]
+            keep_idx = nms(boxes_cls, scores_cls, iou_threshold=nms_iou_threshold)
+            # Limit to top-k boxes per class
+            if len(keep_idx) > top_k_per_class:
+                top_scores = scores_cls[keep_idx].argsort(descending=True)[:top_k_per_class]
                 keep_idx = [keep_idx[i] for i in top_scores.tolist()]
             for k in keep_idx:
                 nms_preds.append((boxes_cls[k].cpu().numpy(), int(cls.item()), scores_cls[k].item()))
@@ -421,10 +427,11 @@ def visualize_bbox_centers(dataset):
 
 
 # Paths
-img_dir = './yolov11/bottlesv11/train/images'
-label_dir = './yolov11/bottlesv11/train/labels'
-val_img_dir = './yolov11/bottlesv11/valid/images'
-val_label_dir = './yolov11/bottlesv11/valid/labels'
+root_dir = './yolov11/opencv_abu-20'
+img_dir = f'{root_dir}/train/images'
+label_dir = f'{root_dir}/train/labels'
+val_img_dir = f'{root_dir}/valid/images'
+val_label_dir = f'{root_dir}/valid/labels'
 
 # Dataset and DataLoader
 max_objects = 10  # Set max objects per image
